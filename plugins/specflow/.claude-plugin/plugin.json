@@ -1,0 +1,13 @@
+{
+  "name": "specflow",
+  "version": "0.2.0",
+  "description": "Core of a spec-driven firmware development workflow",
+  "author": {
+    "name": "quib"
+  },
+  "dependencies": [
+    "superpowers@claude-plugins-official",
+    "mattpocock-skills@claude-plugins-official",
+    "andrej-karpathy-skills@karpathy-skills"
+  ]
+}

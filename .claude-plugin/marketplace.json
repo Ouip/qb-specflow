@@ -1,0 +1,18 @@
+{
+  "name": "specflow",
+  "description": "Spec-driven firmware workflow: spec, gates, implementation, review, on-device; with change impact scans and a couplings table",
+  "owner": {
+    "name": "quib"
+  },
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-plugins-official",
+    "karpathy-skills"
+  ],
+  "plugins": [
+    {
+      "name": "specflow",
+      "source": "./plugins/specflow",
+      "description": "Generic core: 13 skills, gate checklists, templates, check scripts, a version-check hook"
+    }
+  ]
+}
