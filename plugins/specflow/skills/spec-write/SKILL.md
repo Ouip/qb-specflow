@@ -22,7 +22,7 @@ description: Use when writing a new component spec, adding sections to a spec, c
 ## Sections 5 and 6
 
 - Each 5.1 group gets a `#### G<n>` heading; each table row is "input → expected". 5.2 and 5.4 list scenario IDs only.
-- Each line of section 6 is a command plus its result: `<command>` returns 0; `grep -rE "<regex>" <path>` has no hits. Two lines are always there: the product's consistency lint returns 0; `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/coverage.py <this spec> --catalog <scenario catalogs…>` returns 0 (it decides "every rule has a test").
+- Each line of section 6 is a command plus its result: `<command>` returns 0; `grep -rE "<regex>" <path>` has no hits. Two lines are always there: the product's consistency lint returns 0; `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/coverage.py <this spec> --catalog <scenario catalogs…>` returns 0 (it decides "every rule names a test that exists"; whether that test catches a broken rule is `behavior.py`'s job at G5).
 - Judgment calls go in 5.5 (manual) or section 7 (prohibited); section 6 holds commands only.
 
 ## Contracts and couplings
@@ -37,5 +37,5 @@ description: Use when writing a new component spec, adding sections to a spec, c
 
 | Excuse | Reality |
 |---|---|
-| Writing "every rule is covered by at least one test" into the done criteria is enough | No command can judge that sentence. A Verify cell per rule plus `coverage.py` returning 0 can |
+| Writing "every rule is covered by at least one test" into the done criteria is enough | No command can judge that sentence. A Verify cell per rule plus `coverage.py` returning 0 can judge that each rule names a test; `behavior.py` judges whether the test fails when the rule breaks |
 | The contract is frozen, so leave the undecided variant's value blank | A blank lets the implementer pick. Undecided means that variant's build fails, listed as pending hardware |

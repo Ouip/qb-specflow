@@ -16,7 +16,7 @@ The reviewer must not be whoever wrote this code. Read only; change nothing. Fol
 4. **Check table**: one row per in-scope rule.
    `| Rule ID | Code location file:line | Verification | Verdict | Notes |`
    - Location: trace to the line that actually decides or prints the value. If a caller passes the value in, write `caller:line→callee:line`.
-   - Verification: the test named in the rule's Verify cell exists and fails when the rule is broken. With no test, judge from the code itself, write "no test" in Notes, and list it under G5-2.
+   - Verification: the test named in the rule's Verify cell exists and fails when the rule is broken. With no test, judge from the code itself, write "no test" in Notes, and list it under G5-2. When the product keeps a verify map, run `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/behavior.py <spec> --map <verify map> --mutate --workdir <code repo> --allow <test programs…> --strict`, paste its output, and write each rule's status in this column. Without it, write `REFERENCE_ONLY` for a test you only found and `TEST_PASSED` for one you ran; never more.
    - Verdict: Conforms / Violates / N/A / Cannot judge from diff. Code that differs from the rule Violates; state severity separately.
 5. **Style table** (G5-6): one row per `AGENTS.md` rule tagged [G5], checked against full files. Keep it separate from the check table.
 6. **Checklist**: G5-1…G5-10 from `${CLAUDE_PLUGIN_ROOT}/gates/G5.md`, plus the product items in the gate-extension file; one row each.

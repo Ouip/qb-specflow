@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "case_id": "bug-boundary-range",
+  "kind": "bug",
+  "categories": [
+    "boundary",
+    "spec-to-code"
+  ],
+  "units": [
+    "spec/H01-heater.md",
+    "src/heater.c",
+    "src/heater.h"
+  ],
+  "provenance": {
+    "method": "reproduced",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 1,
+      "expect_output": "BUG REPRODUCED"
+    }
+  },
+  "bugs": [
+    {
+      "id": "bug-boundary-range/1",
+      "file": "src/heater.c",
+      "line_range": "7-9",
+      "trigger": "heater_set_target(90)",
+      "root_cause": "the upper bound is checked with t >= 90, so the included end 90 is rejected",
+      "impact": "a valid target of 90 °C (H01 4.1#1) returns HEATER_ERR_RANGE and the target does not change"
+    }
+  ],
+  "traps": []
+}

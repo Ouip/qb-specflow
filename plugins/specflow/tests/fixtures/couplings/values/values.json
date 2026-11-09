@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "variants": {
+    "dev": {"defines": {"BOARD_DEV": "1"}},
+    "prod": {"defines": {"BOARD_PROD": "1"}},
+    "undecided": {"defines": {}}
+  },
+  "couplings": [
+    {"id": "1", "relation": "==",
+     "a": {"file": "host/link.c", "symbol": "LINK_TIMEOUT_MS", "unit": "ms"},
+     "b": {"file": "device/include/cfg.h", "symbol": "DEV_TIMEOUT_MS", "unit": "ms"}},
+    {"id": "2", "relation": "==",
+     "a": {"file": "host/link.c", "symbol": "LINK_ACK_MS", "unit": "ms"},
+     "b": {"file": "device/include/cfg.h", "symbol": "DEV_ACK_MS", "unit": "ms"}},
+    {"id": "3", "relation": "==",
+     "a": {"file": "host/link.c", "symbol": "LINK_WINDOW_S", "unit": "s"},
+     "b": {"file": "device/include/cfg.h", "symbol": "DEV_WINDOW_MS", "unit": "ms"}},
+    {"id": "4", "relation": "==",
+     "a": {"file": "host/link.c", "symbol": "LINK_GONE_MS", "unit": "ms"},
+     "b": {"file": "device/include/cfg.h", "symbol": "DEV_TIMEOUT_MS", "unit": "ms"}},
+    {"id": "5", "relation": "==",
+     "a": {"file": "host/link.c", "symbol": "LINK_TICK_PERIOD", "unit": "ticks"},
+     "b": {"file": "device/include/cfg.h", "symbol": "DEV_TICK_MS", "unit": "ms"}},
+    {"id": "6", "relation": "==", "variants": ["dev", "prod", "undecided", "lab"],
+     "a": {"file": "host/link.c", "symbol": "HOST_FRAME_W", "unit": "px"},
+     "b": {"file": "device/include/board.h", "symbol": "FRAME_W", "unit": "px", "strategy": "cpp"}},
+    {"id": "7", "check": "manual", "kind": "struct layout",
+     "how": "spec review compares device/include/frame.h with L05 3.2 field by field"}
+  ]
+}

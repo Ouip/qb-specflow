@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "case_id": "clean-guarded-length",
+  "kind": "clean",
+  "categories": [
+    "guarded-upstream",
+    "input-validation"
+  ],
+  "units": [
+    "spec/U05-uart.md",
+    "src/frame.c",
+    "src/frame.h",
+    "src/uart.c"
+  ],
+  "provenance": {
+    "method": "exercised",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 0,
+      "expect_output": "SAFE"
+    }
+  },
+  "bugs": [],
+  "traps": [
+    "frame_store() copies len bytes without a check, but its only caller uart_rx() drops len > FRAME_STORE_MAX and frames shorter than they claim (src/uart.c:11-13)"
+  ]
+}

@@ -2,6 +2,7 @@
 """Couplings-table check: everything named in each row's Side A and Side B can be found.
 
 Usage: python couplings.py <couplings.md> --specs <spec folder> [--code <code repo root> ...] [--list]
+                            [--values <values.json> [--cpp <preprocessor>] [--timeout <s>]] [--json]
 
 Takes three kinds of reference from each data row's Side A and Side B cells
 (the headers `A 端` and `B 端` are also accepted):
@@ -13,9 +14,16 @@ Takes three kinds of reference from each data row's Side A and Side B cells
 Each miss prints `row <#>: <reference> not found` and exits 1; otherwise prints `couplings: ok` and exits 0.
 Without --code, path references print `skipped (no --code)` and do not fail.
 --list prints every reference instead, one `row <#> <A|B>: <reference>` line each, checks nothing and exits 0.
+
+Found references do not show that the two sides agree (500 ms on one side, 1000 ms on the other passes the
+reference check). --values also reads each side's value, converts units and compares, per build variant;
+the file format, strategies and limits are in values.py. Each result prints one `value <#> [variant]: <STATUS> ...`
+line. FAIL, UNVERIFIED and BLOCKED exit 1, like a missing reference; MANUAL rows are listed and do not fail.
+--json prints the reference lines and value results as JSON instead.
 """
 import argparse
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -25,6 +33,9 @@ _spec = importlib.util.spec_from_file_location("specflow_coverage", Path(__file_
 _cov = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cov)
 split_row, is_separator = _cov.split_row, _cov.is_separator
+_vspec = importlib.util.spec_from_file_location("specflow_values", Path(__file__).with_name("values.py"))
+_val = importlib.util.module_from_spec(_vspec)
+_vspec.loader.exec_module(_val)
 
 SECTION = re.compile(r"(?<![A-Za-z0-9])([A-Z]{1,3}\d{2,3})\s+(\d+(?:\.\d+)*(?:[／/、]\d+(?:\.\d+)*)*)")
 BACKTICK = re.compile(r"`([^`]+)`")
@@ -124,6 +135,10 @@ def main(argv):
     ap.add_argument("--specs", required=True)
     ap.add_argument("--code", nargs="+", default=[])
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--values")
+    ap.add_argument("--cpp")
+    ap.add_argument("--timeout", type=float, default=60)
+    ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     table = rows(Path(args.table).read_text(encoding="utf-8"))
     if not table:
@@ -135,7 +150,7 @@ def main(argv):
                 for kind, val, sec in refs(cell):
                     print(f"row {num} {side}: {val} {sec}" if kind == "section" else f"row {num} {side}: {val}")
         return 0
-    idx, bad = Index(args.specs, args.code, args.table), False
+    idx, bad, lines = Index(args.specs, args.code, args.table), False, []
     for num, a, b in table:
         for kind, val, sec in refs(a) + refs(b):
             if kind == "section":
@@ -143,13 +158,36 @@ def main(argv):
             elif kind == "symbol":
                 ok, label = idx.has_symbol(val), val
             elif not args.code:
-                print(f"row {num}: {val} skipped (no --code)")
+                lines.append(f"row {num}: {val} skipped (no --code)")
                 continue
             else:
                 ok, label = idx.has_path(val), val
             if not ok:
-                print(f"row {num}: {label} not found")
+                lines.append(f"row {num}: {label} not found")
                 bad = True
+    problems, results = [], []
+    if args.values:
+        vpath = Path(args.values)
+        try:
+            data = json.loads(vpath.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as err:
+            problems = [f"{vpath.name}: cannot read ({err})"]
+        else:
+            problems = _val.check_contract(data, {num for num, _, _ in table}, vpath.name)
+            if not problems:
+                results = _val.check(data, [Path(c) for c in args.code], args.cpp, args.timeout)
+    bad = bad or bool(problems) or any(r["status"] in ("FAIL", "UNVERIFIED", "BLOCKED") for r in results)
+    if args.json:
+        print(json.dumps({"references": lines, "value_file_problems": problems, "values": results,
+                          "exit_code": 1 if bad else 0}, ensure_ascii=False, indent=2))
+        return 1 if bad else 0
+    for line in lines + problems:
+        print(line)
+    for r in results:
+        print(_val.line(r))
+    if results:
+        print("values: " + ", ".join(f"{sum(r['status'] == s for r in results)} {s}"
+                                     for s in ("PASS", "FAIL", "UNVERIFIED", "BLOCKED", "MANUAL")))
     if bad:
         return 1
     print("couplings: ok")

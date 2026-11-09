@@ -13,6 +13,8 @@ Verify values (several may be separated by `,` or `、`):
 - A section number only, e.g. `5.5`: the spec must have that section heading.
 - `untested: <reason>` (`不測：` also accepted): passes, but the reason must not be empty.
 Each problem prints one line `<file> <section>#<id>: <problem>` and exits 1; otherwise prints `coverage: ok` and exits 0.
+This is a reference check only: `coverage: ok` means every Verify value points at something that exists,
+not that any test exercises the rule. `behavior.py` runs the tests and tells the two apart.
 """
 import re
 import sys
@@ -117,8 +119,10 @@ def check_value(value, lines, heads, catalogs):
     return problems
 
 
-def scan(text, name, catalogs):
-    """Return (rule IDs, problem strings). `catalogs` is a list of scenario-catalog texts."""
+def scan(text, name, catalogs, verify=None):
+    """Return (rule IDs, problem strings). `catalogs` is a list of scenario-catalog texts.
+    If `verify` is a dict, it is filled with rule ID -> raw Verify value (None when a list item has no marker)."""
+    verify = {} if verify is None else verify
     lines = text.splitlines()
     heads = headings(lines)
     start = next((i for i, lv, num, _ in heads if lv == 2 and num == "4"), None)
@@ -148,9 +152,11 @@ def scan(text, name, catalogs):
             rid = f"{sub}#{cells[hash_col] if hash_col < len(cells) else '?'}"
             rules.append(rid)
             if v_col is None:
+                verify[rid] = None
                 problems.append(f"{name} {rid}: table has no Verify column")
             else:
                 value = cells[v_col] if v_col < len(cells) else ""
+                verify[rid] = value
                 problems += [f"{name} {rid}: {p}" for p in check_value(value, lines, heads, catalogs)]
             continue
         in_table = False
@@ -160,9 +166,11 @@ def scan(text, name, catalogs):
             rules.append(rid)
             mk = MARKER.search(lm.group(3))
             if not mk:
+                verify[rid] = None
                 problems.append(f"{name} {rid}: no [verify: ...] marker")
             else:
-                problems += [f"{name} {rid}: {p}" for p in check_value(mk.group(1) or mk.group(2) or "", lines, heads, catalogs)]
+                verify[rid] = mk.group(1) or mk.group(2) or ""
+                problems += [f"{name} {rid}: {p}" for p in check_value(verify[rid], lines, heads, catalogs)]
     return rules, problems
 
 

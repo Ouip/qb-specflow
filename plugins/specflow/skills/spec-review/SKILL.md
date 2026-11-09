@@ -11,7 +11,7 @@ The reviewer reads the spec and changes nothing. Follow the five stages of `spec
 2. **Scope and basis**: this spec (for a change, only the sections on the impact list); the dependencies' contracts; the decisions table; the couplings rows with this spec on either side; the gate-extension file. Specs designed in the same batch are reviewed together.
 3. **Run the two scripts first** and paste their output into the report verbatim:
    - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/coverage.py <spec> --catalog <scenario catalogs from specflow.md…>`
-   - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/couplings.py <couplings table> --specs <spec folder> --code <code repos from specflow.md…>`
+   - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/couplings.py <couplings table> --specs <spec folder> --code <code repos from specflow.md…>`, plus `--values <value file> [--cpp <preprocessor>]` when the product keeps a value file
    A script that returns 1 makes its item Fail.
 4. **Item by item**: G2-1…G2-11 from `${CLAUDE_PLUGIN_ROOT}/gates/G2.md`, plus the product items in the gate-extension file. One row each: Pass / Fail / N/A (with a reason); notes cite `file:line`. For every couplings row, open the opposite spec and reread it; write "coupling #n checked" or state the mismatch.
 5. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g2.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/<id>-g2.md`. Mark the round.

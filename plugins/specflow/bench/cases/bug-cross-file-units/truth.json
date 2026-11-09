@@ -1,0 +1,39 @@
+{
+  "format": 1,
+  "case_id": "bug-cross-file-units",
+  "kind": "bug",
+  "categories": [
+    "cross-file",
+    "units",
+    "spec-to-code"
+  ],
+  "units": [
+    "spec/L03-link.md",
+    "src/link.c",
+    "src/timer.c",
+    "src/timer.h"
+  ],
+  "provenance": {
+    "method": "reproduced",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 1,
+      "expect_output": "BUG REPRODUCED"
+    }
+  },
+  "bugs": [
+    {
+      "id": "bug-cross-file-units/1",
+      "file": "src/link.c",
+      "line_range": "3-11",
+      "trigger": "link_send()",
+      "root_cause": "LINK_ACK_TIMEOUT_S (seconds) is passed to timer_arm(), which takes milliseconds",
+      "impact": "the ack timeout is 2 ms instead of 2 s (L03 4.1#1), so the link retries almost at once"
+    }
+  ],
+  "traps": []
+}

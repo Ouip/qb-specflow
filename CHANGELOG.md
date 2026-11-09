@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## Unreleased
+
+Fewer false passes and unchecked review claims. Existing commands, specs and tables behave as before.
+
+- `behavior.py` (new): tells "a Verify reference exists" apart from "a test verifies the rule". Reads a verify map (JSON) and gives each rule `MUTATION_VERIFIED`, `TEST_PASSED`, `TEST_FAILED`, `MANUAL_VERIFIED`, `WAIVED`, `REFERENCE_ONLY`, `UNVERIFIED` or `BLOCKED`. Commands run only with `--run`/`--mutate`, `--workdir` and `--allow`, as argument lists with a timeout; `--mutate` works in a temporary copy and counts a mutation only when the expected assertion fails. `--strict` fails rules whose `require` is not met.
+- `couplings.py --values` (new option): reads both sides' values (`#define` as text, or through a gcc-compatible preprocessor with `--cpp` per build variant), converts units and compares; `PASS`, `FAIL`, `UNVERIFIED`, `BLOCKED`, `MANUAL`. Unknown units, unreadable symbols and undecided variants are never `PASS`. No `eval()`; a restricted expression reader (`values.py`).
+- `coverage.py`: `scan()` can also return each rule's Verify value; output and exit codes unchanged. The docstring says it checks references only.
+- `deep-review`: stage 2 runs a spec → code track and a code → risk track; stage 3 verifies each finding against counter-evidence with the statuses `CONFIRMED`, `NEEDS_VERIFICATION` (was Unverified), `REJECTED`; stage 4 sorts scope into `REVIEWED`, `NOT_REVIEWED`, `INSUFFICIENT_EVIDENCE`; stage 5 writes a findings file. The report states whether independent sub-agents ran.
+- `review_report.py` (new): checks a findings file for traceability (file at the reviewed commit, line range, verbatim quotes, execution records, required fields). It does not judge whether a finding is right.
+- `bench.py` and `bench/` (new): 7 local benchmark cases (4 bug, 2 clean, 1 complex; 6 known bugs) with reproducible ground truth, and offline scoring of judged review runs. No CI.
+- G2-10, G2-11, G5-1 and the G5 check table name the new scripts and statuses; `code-review-gate`, `spec-review` and `spec-write` point at them.
+
+### Template changes
+
+- `couplings.md`: "a tool check" names `couplings.py --values`.
+
+### Format changes
+
+None required. New optional files: verify map (`behavior.py`), value file (`values.py`), findings file (`review_report.py`).
+
 ## 0.2.0 — 2026-11-09
 
 Everything in English.

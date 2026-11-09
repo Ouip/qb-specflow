@@ -8,8 +8,8 @@ Three mechanisms:
 
 | Mechanism | What it catches | Where |
 |---|---|---|
-| Rule → Verify mapping | Rules a spec states in section 4 that no test verifies and the code does not follow | the Verify column in spec section 4; `scripts/coverage.py`; the G5 check table |
-| Couplings table | One side changes and the other side (a component linked physically or by data flow) does not follow | `templates/couplings.md`; `scripts/couplings.py`; required by G2 and `change` |
+| Rule → Verify mapping | Rules a spec states in section 4 that no test verifies and the code does not follow | the Verify column in spec section 4; `scripts/coverage.py` (every reference resolves); `scripts/behavior.py` (the test runs, and fails when the rule is broken); the G5 check table |
+| Couplings table | One side changes and the other side (a component linked physically or by data flow) does not follow | `templates/couplings.md`; `scripts/couplings.py` (references; `--values` reads and compares the values per variant); required by G2 and `change` |
 | Change impact scan | A decision changes and only the first spec gets updated | the seven steps and the impact list of `/specflow:change` |
 
 Four gates (checklists in `gates/`): G2 spec review, G-T test review, G4 machine acceptance, G5 code review.
@@ -37,7 +37,7 @@ Thirteen skills:
 | `pickup` | Picking up work at the start of a session |
 | `wrapup` | Wrapping up a session |
 | `retro` | Looking back: what a gate let through, split into core or product |
-| `deep-review` | The five-stage review method (used inside G2 and G5) |
+| `deep-review` | The five-stage review method (used inside G2 and G5): a spec → code track and a code → risk track, an evidence check against counter-evidence, a coverage audit; `scripts/review_report.py` checks the findings file |
 
 ## 2. Install
 
@@ -102,6 +102,21 @@ Example (a hypothetical product): a single-board thermostat timer. STM32G0, Free
 | Couplings table | NTC divider resistor ↔ lookup-table constants ↔ display decimals; system clock ↔ tick period ↔ every `*_MS` constant; pin table ↔ PCB revision |
 
 What stays as is: every skill's steps, the check-table format, the couplings columns, the deferred list, the decisions table, the seven-section spec, the manual acceptance format.
+
+## 9. Check scripts and the review benchmark
+
+| Script | What it shows | What it does not show |
+|---|---|---|
+| `coverage.py <spec> --catalog …` | every rule's Verify reference resolves | that any test exercises the rule |
+| `behavior.py <spec> --map <verify map> [--run/--mutate --workdir … --allow …] [--strict]` | per rule: `MUTATION_VERIFIED`, `TEST_PASSED`, `TEST_FAILED`, `MANUAL_VERIFIED`, `WAIVED`, `REFERENCE_ONLY`, `UNVERIFIED`, `BLOCKED` | anything beyond the mutations the map lists; a mutation that only breaks the build or times out is never counted |
+| `couplings.py <table> --specs … --code …` | every reference in Side A and Side B exists | that the two sides agree |
+| `couplings.py … --values <value file> [--cpp <preprocessor>]` | the two sides' values per variant, units converted: `PASS`, `FAIL`, `UNVERIFIED`, `BLOCKED`, `MANUAL` | protocols, struct layouts, timing order, API meaning (listed as `MANUAL`); macros the text strategy cannot evaluate (`UNVERIFIED`) |
+| `review_report.py <findings.json> --root <dir>` | each finding's file, lines, quotes, commit and execution records are traceable | that any finding is a real bug |
+| `bench.py cases / repro / score` | benchmark size; ground truth reproduced with sanitizers; precision, recall, false-positive rate, evidence validity, coverage, stability of judged runs | any score without judged runs ([bench/README.md](plugins/specflow/bench/README.md)) |
+
+File formats are in each script's docstring. Nothing runs a command from a map or value file unless the command line says so (`--run`, `--mutate`, `--allow`, `--cpp`).
+
+Tests: `python -m unittest discover -s plugins/specflow/tests`. Tests that need a C compiler or preprocessor are skipped without one; set `SPECFLOW_TEST_CPP` or `SPECFLOW_TEST_CC` to run them.
 
 ## Verified environments
 

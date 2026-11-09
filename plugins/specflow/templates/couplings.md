@@ -9,7 +9,7 @@ When either side changes, `/specflow:change` puts the whole opposite side on the
 
 - Write Side A and Side B as references that can be found; `couplings.py` checks each one: spec sections as `<ID> <section>` (e.g. `X03 4.2`);
   symbols in backticks (e.g. `` `FRAME_W` ``); file paths in backticks, containing `/` (e.g. `` `src/qr/gen.py` ``).
-- How kept consistent, one of four: a compile-time assert (best), a test row (a scenario or a 5.1 group), manual comparison in spec review, a tool check.
+- How kept consistent, one of four: a compile-time assert (best), a test row (a scenario or a 5.1 group), manual comparison in spec review, a tool check (e.g. `couplings.py --values`, which reads both sides' values, converts units and compares them per variant; the value-file format is in `scripts/values.py`).
 - Last checked: the decision ID of the last time both sides were confirmed consistent; `—` if never.
 - The table only catches registered couplings. When writing a spec shows that two components need the same value, add a row.
 
