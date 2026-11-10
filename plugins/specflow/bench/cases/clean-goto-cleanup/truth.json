@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "case_id": "clean-goto-cleanup",
+  "kind": "clean",
+  "categories": [
+    "resource-lifetime",
+    "error-paths"
+  ],
+  "units": [
+    "spec/C06-config.md",
+    "src/config.c",
+    "src/config.h"
+  ],
+  "provenance": {
+    "method": "exercised",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 0,
+      "expect_output": "SAFE"
+    }
+  },
+  "bugs": [],
+  "traps": [
+    "the early goto exits look like leaks, but every path after malloc reaches free(copy) at out:",
+    "strcpy into key and value looks unbounded, but both lengths are checked first (src/config.c:21)"
+  ]
+}

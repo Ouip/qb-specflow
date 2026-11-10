@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "case_id": "bug-trust-length",
+  "kind": "bug",
+  "categories": [
+    "security",
+    "input-validation",
+    "spec-silent"
+  ],
+  "units": [
+    "spec/P02-proto.md",
+    "src/proto.c",
+    "src/proto.h"
+  ],
+  "provenance": {
+    "method": "reproduced",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 1,
+      "expect_output": "global-buffer-overflow"
+    }
+  },
+  "bugs": [
+    {
+      "id": "bug-trust-length/1",
+      "file": "src/proto.c",
+      "line_range": "9-12",
+      "trigger": "a frame whose length byte frame[1] is greater than 16",
+      "root_cause": "the length byte from the UART is used for memcpy without checking it against PROTO_PAYLOAD_MAX",
+      "impact": "memcpy writes past the 16-byte static payload buffer: memory corruption reachable from the UART"
+    }
+  ],
+  "traps": []
+}

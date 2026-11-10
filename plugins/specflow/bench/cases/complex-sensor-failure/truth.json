@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "case_id": "complex-sensor-failure",
+  "kind": "complex",
+  "categories": [
+    "error-propagation",
+    "cross-module",
+    "safety",
+    "spec-to-code"
+  ],
+  "units": [
+    "spec/T07-thermostat.md",
+    "src/ctrl.c",
+    "src/i2c.h",
+    "src/sensor.c",
+    "src/sensor.h",
+    "src/temp.c"
+  ],
+  "provenance": {
+    "method": "reproduced",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer"
+      ],
+      "expect_exit": 1,
+      "expect_output": "BUG REPRODUCED \\(#2\\)[\\s\\S]*BUG REPRODUCED \\(#1\\)"
+    },
+    "note": "bug 2 was missing from the first version; a smoke-run review on 2026-11-09 found it, then the harness reproduced it"
+  },
+  "bugs": [
+    {
+      "id": "complex-sensor-failure/1",
+      "file": "src/temp.c",
+      "line_range": "5-8",
+      "trigger": "the I2C read fails (bus error or NACK) after any earlier reading, or at start",
+      "root_cause": "temp_update() ignores the SENSOR_ERR return of sensor_read_raw(), so the old raw value (or 0 at start) is kept and ctrl_step() cannot tell the sensor failed",
+      "impact": "with the sensor unreadable the heater keeps following a stale temperature and can stay on, against T07 4.1#2 (heater off within one step)"
+    },
+    {
+      "id": "complex-sensor-failure/2",
+      "file": "src/temp.c",
+      "line_range": "11-14",
+      "trigger": "a reading of raw 929 (58.0625 °C) with the 60 °C target",
+      "root_cause": "temp_celsius_x10() truncates raw * 10 / 16 toward zero, so ctrl_step()'s t <= target_x10 - 20 also holds for readings up to 0.0625 °C above 58 °C",
+      "impact": "the heater turns on at 1.9375 °C below the target, against T07 4.1#1 (2 °C or more below)"
+    }
+  ],
+  "traps": []
+}

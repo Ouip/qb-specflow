@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "case_id": "bug-isr-race",
+  "kind": "bug",
+  "categories": [
+    "concurrency",
+    "spec-to-code"
+  ],
+  "units": [
+    "spec/E04-events.md",
+    "src/events.c"
+  ],
+  "provenance": {
+    "method": "reproduced",
+    "human_review": "pending",
+    "repro": {
+      "cflags": [
+        "-fsanitize=thread",
+        "-pthread"
+      ],
+      "expect_exit": 66,
+      "expect_output": "data race",
+      "run_prefix": [
+        "setarch",
+        "-R"
+      ],
+      "note": "ThreadSanitizer needs ASLR off on kernels with high-entropy mmap (it prints 'unexpected memory mapping' and exits 66 without a race report); setarch is Linux only"
+    }
+  },
+  "bugs": [
+    {
+      "id": "bug-isr-race/1",
+      "file": "src/events.c",
+      "line_range": "10-16",
+      "trigger": "a UART interrupt arrives between the read and the write of pending-- in app_take_event()",
+      "root_cause": "pending is shared between the interrupt and the main loop without volatile or disabling interrupts around the read-modify-write",
+      "impact": "the interrupt's increment is overwritten and an event is lost (E04 4.1#1)"
+    }
+  ],
+  "traps": []
+}

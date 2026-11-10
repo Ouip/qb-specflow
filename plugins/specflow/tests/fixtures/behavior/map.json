@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "rules": {
+    "4.1#1": {
+      "test": "test_heater.Range.test_rejects_95",
+      "command": ["python", "-m", "unittest", "-v", "test_heater.Range"],
+      "expect_output": "test_rejects_95",
+      "mutation": {"file": "heater.py", "find": "t > 90", "replace": "t > 95", "assertion": "AssertionError: RANGE_REJECTS_95"},
+      "require": "mutation"
+    },
+    "4.1#2": {
+      "test": "test_heater.Threshold.test_runs",
+      "command": ["python", "-m", "unittest", "-v", "test_heater.Threshold"],
+      "mutation": {"file": "heater.py", "find": "actual <= target - 2", "replace": "actual <= target - 5", "assertion": "AssertionError"},
+      "require": "mutation"
+    },
+    "4.1#4": {
+      "manual": {"procedure": "Unplug the sensor and watch the heater LED", "evidence": "manual-H01.md", "reviewer": "QA", "date": "2026-11-09"}
+    },
+    "4.1#6": {
+      "waiver": {"reason": "display component not built yet", "approved_by": "product owner"}
+    }
+  }
+}
