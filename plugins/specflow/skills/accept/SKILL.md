@@ -5,7 +5,7 @@ description: Use when the implementer reports done and it must be decided whethe
 
 # Machine acceptance (G4) and on-device
 
-The report is only a lead. The verdict rests only on return values and diffs you produce yourself. Before claiming a pass, follow `superpowers:verification-before-completion`.
+The report is only a lead. The verdict rests only on return values and diffs you produce yourself. Before claiming a pass, run the checks below yourself, now, and quote their output; an earlier run does not count.
 
 1. Read `specflow.md` in the product's spec folder. Missing, or no `format: 2` in its header → stop and ask the user to run `/specflow:init-product` first.
 2. **Baseline**: the prep commit (the `prep:` commit on the branch). Every diff runs from it to HEAD, not from main; the spec copies and implementer rules it brought in are not the implementer's changes.

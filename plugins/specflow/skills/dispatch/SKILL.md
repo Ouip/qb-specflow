@@ -21,7 +21,7 @@ Four stages; check each stage's exit before the next. The main session does not 
 
 Per "Implementer" in `specflow.md`:
 
-- **Sub-agent**: the prompt says: read this spec in `docs/` and implement it fully; change only the paths allowed in spec section 7; do not change a character of the contracts or frozen tests, and report a scenario you believe is wrong; follow `superpowers:test-driven-development` so every 5.1 row goes red then green, and `andrej-karpathy-skills:karpathy-guidelines` before writing code; when done, run every line of spec section 6; report in the product's format, listing anything unfinished as unmet items.
+- **Sub-agent**: the prompt says: read this spec in `docs/` and implement it fully; change only the paths allowed in spec section 7; do not change a character of the contracts or frozen tests, and report a scenario you believe is wrong; write each 5.1 row's test first and see it fail, then make it pass; follow `andrej-karpathy-skills:karpathy-guidelines` before writing code; when done, run every line of spec section 6; report in the product's format, listing anything unfinished as unmet items.
 - **Another tool**: use the command in `specflow.md`, carrying the points above verbatim.
 
 **Exit**: a well-formed report exists. Then run `/specflow:accept` yourself; do not trust the report.

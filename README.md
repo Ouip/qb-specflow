@@ -67,7 +67,7 @@ Thirteen skills:
 ## 5. Update
 
 1. Read the CHANGELOG sections between your version and the new one, especially "Template changes" and "Format changes".
-2. Change `ref` in the product's `.claude/settings.json` to the new tag (e.g. `v0.0.1`). The tag must exist on the repo: a release is tagged `v<version>`.
+2. Change `ref` in the product's `.claude/settings.json` to the new tag (e.g. `v0.0.2`). The tag must exist on the repo: a release is tagged `v<version>`.
 3. Refresh the marketplace and update the plugin:
    ```
    claude plugin marketplace update specflow

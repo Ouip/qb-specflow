@@ -19,7 +19,7 @@
 | Situation | Read first | Skill |
 |---|---|---|
 | Starting, picking up | handoff file | `/specflow:pickup` |
-| New requirement, design change | decisions table | `superpowers:brainstorming`; once settled, `/specflow:spec-write` |
+| New requirement, design change | decisions table | settle it with the user first, then `/specflow:spec-write` |
 | A decision changes an existing premise; a contract needs a new version | couplings table, deferred list, contract change rules | `/specflow:change` |
 | Writing or changing a spec | spec template, couplings table | `/specflow:spec-write` |
 | Spec review (G2) | gate-extension file | `/specflow:spec-review` |
