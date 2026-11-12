@@ -5,7 +5,10 @@ description: Use at the start of a session to pick up work, continue the previou
 
 # Pick up
 
-1. Read `specflow.md` in the product's spec folder (missing, or no `format: 2` in its header → ask the user to run `/specflow:init-product` first). The handoff file path is in it.
+1. Read only the lines of `specflow.md` (in the product's spec folder) that pickup needs, not the whole file:
+   `grep -E '^format:|^\| (Language|Spec folder|Code repos|Handoff file) \|' specflow.md`
+   (PowerShell: `Select-String -Pattern` with the same regex).
+   Missing, or no `format: 2` → ask the user to run `/specflow:init-product` first.
 2. For the spec repo and every code repo in `specflow.md`: `git status --short`, `git fetch`, `git status -sb`, `git branch -vv`. List every uncommitted file and leave it alone: it may belong to another session.
 3. Sync: clean working tree and only behind → `git pull --ff-only`. Not clean, or diverged → do not pull; report how many commits behind.
 4. Read the handoff file, after the sync so it is the latest. Leave its links unopened for now.

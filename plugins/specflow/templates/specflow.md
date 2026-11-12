@@ -1,6 +1,6 @@
 ---
 format: 2
-core: 0.0.2
+core: 0.0.3
 python: python
 ---
 # specflow product settings
