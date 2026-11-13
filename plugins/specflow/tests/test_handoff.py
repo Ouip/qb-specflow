@@ -192,6 +192,13 @@ class World(unittest.TestCase):
         git(f, "commit", "-q", "-m", msg)
         return head(f)
 
+    def reject_pushes(self, rid):
+        """A pre-receive hook in the bare remote that refuses every push (executable: POSIX git skips it otherwise)."""
+        hook = self.remote[rid] / "hooks" / "pre-receive"
+        write(hook, "#!/bin/sh\necho rejected-by-test >&2\nexit 1\n")
+        hook.chmod(0o755)
+        return hook
+
     def set_notes(self, extra_line):
         write(self.A[self.HOME] / self.note("A1"), PROGRESS + extra_line + "\n")
 
@@ -655,8 +662,7 @@ class TestVerifyScenarios(World):
         self.assertNotEqual(self.A["app"], self.B["app"])
 
     def test_code_push_failure(self):
-        hook = self.remote["app"] / "hooks" / "pre-receive"
-        write(hook, "#!/bin/sh\necho rejected-by-test >&2\nexit 1\n")
+        self.reject_pushes("app")
         new = self.app_commit("docs/reviews/A1-g6.md", "G6\n")
         self.assertNotEqual(git(self.A["app"], "push", "-q", ok=False).returncode, 0)  # code push failed
         self.set_notes("- app `docs/reviews/A1-g6.md`")
@@ -868,8 +874,7 @@ class TestVerifyScenarios(World):
 
     def test_verify_lists_all_missing_in_one_run(self):
         write(self.A["app"] / "docs/reviews/A1-run.md", "untracked\n")
-        hook = self.remote["app"] / "hooks" / "pre-receive"
-        write(hook, "#!/bin/sh\nexit 1\n")
+        self.reject_pushes("app")
         self.app_commit("src/new.c", "int n;\n")
         self.set_notes("- app `docs/reviews/A1-run.md`、`A1-g2.md`、app `docs/none.md`")
         self.wrapup()
@@ -934,8 +939,7 @@ class TestArtifacts(World):
 
 class TestLevelsAndExitCodes(World):
     def test_three_levels(self):
-        hook = self.remote["app"] / "hooks" / "pre-receive"
-        write(hook, "#!/bin/sh\nexit 1\n")
+        hook = self.reject_pushes("app")
         self.app_commit("src/a.c", "a\n")
         code, out = self.wrapup()
         self.assertEqual((code, out["level"]), (4, "local"))  # pending items: still local
