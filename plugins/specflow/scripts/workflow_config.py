@@ -76,6 +76,11 @@ def home_id(policy: dict) -> str:
     return homes[0]
 
 
+def remote_alias(policy: dict, repo_id: str) -> str:
+    """The git remote name of a repo; "origin" when the policy does not set remote_alias."""
+    return policy["repos"][repo_id].get("remote_alias") or "origin"
+
+
 def policy_resources(policy: dict) -> tuple[str, ...]:
     """Extra named-resource kinds this product adds on top of the built-in ones (state_io.BUILTIN_RESOURCES)."""
     return tuple(policy.get("resources") or ())
@@ -89,15 +94,22 @@ def validate_policy(d: dict) -> list[str]:
     for k in FORBIDDEN_STATE_KEYS:
         if k in d:
             e.append(f"top-level field \"{k}\" is not allowed: component state lives only in components.json")
-    for k in ("entry", "repos", "tools", "capabilities", "test_profiles", "roles", "dispatch"):
+    # Required: repos, tools, capabilities, dispatch.timeout_seconds. Optional but validated when present: entry,
+    # test_profiles, roles, resources, repos.*.remote_alias (default "origin"), dispatch.session_timeout_seconds.
+    for k in ("repos", "tools", "capabilities", "dispatch"):
         if not isinstance(d.get(k), dict) or not d.get(k):
             e.append(f"{k} is missing (must be a non-empty object)")
+    for k in ("entry", "test_profiles", "roles"):
+        if k in d and not isinstance(d[k], dict):
+            e.append(f"{k} must be an object")
     repos, tools = d.get("repos") or {}, d.get("tools") or {}
-    caps, roles = d.get("capabilities") or {}, d.get("roles") or {}
+    caps = d.get("capabilities") or {}
+    roles = d.get("roles") if isinstance(d.get("roles"), dict) else {}
     for rid, r in repos.items():
-        for k in ("remote_alias", "integration_branch"):
-            if not isinstance(r, dict) or not isinstance(r.get(k), str) or not r.get(k):
-                e.append(f"repos.{rid}.{k} must be a non-empty string")
+        if not isinstance(r, dict) or not isinstance(r.get("integration_branch"), str) or not r.get("integration_branch"):
+            e.append(f"repos.{rid}.integration_branch must be a non-empty string")
+        if isinstance(r, dict) and "remote_alias" in r and not (isinstance(r["remote_alias"], str) and r["remote_alias"]):
+            e.append(f"repos.{rid}.remote_alias must be a non-empty string")
     homes = [rid for rid, r in repos.items() if isinstance(r, dict) and r.get("home") is True]
     if repos and len(homes) != 1:
         e.append(f"repos must have exactly one entry with \"home\": true (found {len(homes)})")
@@ -119,7 +131,8 @@ def validate_policy(d: dict) -> list[str]:
             e.append(f"capabilities.{cn}.repos must be an array of strings")
         else:
             e += [f"capabilities.{cn}: repo \"{r}\" is not in repos" for r in c["repos"] if r not in repos]
-    for pn, p in (d.get("test_profiles") or {}).items():
+    profiles = d.get("test_profiles") if isinstance(d.get("test_profiles"), dict) else {}
+    for pn, p in profiles.items():
         if not isinstance(p, dict):
             e.append(f"test_profiles.{pn} must be an object")
             continue
@@ -140,9 +153,10 @@ def validate_policy(d: dict) -> list[str]:
     disp = d.get("dispatch") or {}
     if not isinstance(disp.get("timeout_seconds"), int) or disp.get("timeout_seconds", 0) <= 0:
         e.append("dispatch.timeout_seconds must be a positive integer")
-    st = disp.get("session_timeout_seconds")  # per-session timeout of a session loop
-    if not isinstance(st, int) or isinstance(st, bool) or st <= 0:
-        e.append("dispatch.session_timeout_seconds must be a positive integer")
+    if "session_timeout_seconds" in disp:  # optional: per-session timeout of a session loop
+        st = disp["session_timeout_seconds"]
+        if not isinstance(st, int) or isinstance(st, bool) or st <= 0:
+            e.append("dispatch.session_timeout_seconds must be a positive integer")
     for c in disp.get("requires_capabilities", []):
         if c not in caps:
             e.append(f"dispatch.requires_capabilities: \"{c}\" is not in capabilities")
@@ -365,6 +379,15 @@ def default_installed() -> Path:
     return Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 
 
+def _same_path(a, b) -> bool:
+    if not isinstance(a, str) or not a:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
+
+
 def build_lock(installed: dict, plugin_json: dict, marketplaces: dict | None = None, locked_at: str | None = None) -> dict:
     """Make a lock from installed_plugins.json: the plugin that ships this script (name from plugin.json) as the core,
     plus every plugin in plugin.json "dependencies" ("name@marketplace"), all required. Uses the user-scope entry.
@@ -379,7 +402,14 @@ def build_lock(installed: dict, plugin_json: dict, marketplaces: dict | None = N
     core_keys = [k for k in have if k.split("@", 1)[0] == name]
     if not core_keys:
         raise ConfigError(f"{name} is not installed (nothing named {name}@... in installed_plugins.json)", 4)
-    wanted = [sorted(core_keys)[0], *deps]
+    # The core is the install this script belongs to: the entry whose installPath is PLUGIN_ROOT. With the plugin
+    # installed from several marketplaces, guessing would pin the wrong one.
+    mine = [k for k in core_keys if _same_path((_effective_entry(have[k]) or {}).get("installPath"), PLUGIN_ROOT)]
+    if len(mine) != 1:
+        raise ConfigError(
+            f"cannot tell which install of {name} this script belongs to: {len(mine)} entries of {', '.join(sorted(core_keys))} "
+            f"have an installPath equal to {PLUGIN_ROOT}; run lock-write from the installed copy (exactly one must match)", 2)
+    wanted = [mine[0], *deps]
     plugins = {}
     for key in wanted:
         ent = _effective_entry(have.get(key, []))
@@ -649,7 +679,9 @@ def cmd_settings(a) -> int:
         print(f"  {s['scope']:<14} {'yes' if s['exists'] else 'no '}  {s['path']}")
         for c in s["session_start"]:
             print(f"      SessionStart: {c}")
-    print(f"fixed entry: open the session in {root / policy['entry']['cwd']}")
+    cwd = (policy.get("entry") or {}).get("cwd")
+    if isinstance(cwd, str) and cwd:
+        print(f"fixed entry: open the session in {root / cwd}")
     return 0
 
 

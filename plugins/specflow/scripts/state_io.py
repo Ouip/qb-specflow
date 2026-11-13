@@ -683,15 +683,17 @@ def _claim_paths(runtime: Path, kind: str, name: str, resources=()):
         raise StateError(f"claim kind must be one of {', '.join(CLAIM_KINDS)}: {kind}")
     if not (isinstance(name, str) and name.strip()):
         raise StateError("a claim needs a name")
-    key = name.strip().lower()  # names compare ignoring case: COM5 and com5 are one resource
+    # Resource names compare ignoring case (COM5 and com5 are one resource); task claims keep exact case, because
+    # component ids are case-sensitive (A1 and a1 are different components).
+    key = name.strip().lower() if kind == "resource" else name.strip()
     if kind == "resource":
         allowed = {r.lower() for r in (*BUILTIN_RESOURCES, *resources)}
         if key.split(":", 1)[0] not in allowed:
             raise StateError(f"a named local resource must be one of {', '.join(sorted(allowed))} "
                              f"(e.g. integration-branch:app); more kinds come from `resources` in workflow.json: {name}")
-    safe = re.sub(r"[^a-z0-9._-]", "_", key)
-    if safe != key:
-        safe += "-" + _sha256(key.encode("utf-8"))[:8]
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", key)
+    if safe != key or safe != safe.lower():  # upper case gets a hash too: file names must differ on case-insensitive filesystems
+        safe = safe.lower() + "-" + _sha256(key.encode("utf-8"))[:8]
     d = Path(runtime) / "claims"
     return d / f"{kind}-{safe}.lock", d / f"{kind}-{safe}.json"
 
@@ -765,7 +767,7 @@ class Claim:
 def acquire_claim(runtime: Path, kind: str, name: str, *, run_id: str | None = None,
                   worktree: Path | None = None, resources=()) -> Claim:
     """Take a claim on a task (kind="task", name = component id) or a named local resource (kind="resource"; the kind part of
-    name must be in BUILTIN_RESOURCES or in `resources`). Names compare ignoring case. A held claim raises ClaimHeld: the OS lock
+    name must be in BUILTIN_RESOURCES or in `resources`). Resource names compare ignoring case; task names keep exact case. A held claim raises ClaimHeld: the OS lock
     is still held, or the owner process tree in the metadata is alive or cannot be confirmed. A takeover needs the owner and its
     children confirmed finished (the old record is kept in Claim.previous); a record from another machine is not trusted and
     this machine's state decides. A claim is valid on this machine only: it cannot stop another machine; cross-machine

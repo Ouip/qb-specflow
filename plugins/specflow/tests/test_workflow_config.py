@@ -127,9 +127,50 @@ class TestSchema(Tmp):
     def test_bad_schema_reports_every_problem(self):
         bad = policy()
         bad["schema_version"] = 99
-        del bad["roles"]
-        bad["repos"]["app"].pop("remote_alias")
+        del bad["tools"]
+        bad["repos"]["app"].pop("integration_branch")
         self.assertGreaterEqual(len(wc.validate_policy(bad)), 3)
+
+    def test_minimal_policy_validates(self):
+        """Only repos, tools, capabilities and dispatch.timeout_seconds are required (e.g. a docs-only project)."""
+        mini = {"schema_version": 1,
+                "repos": {"docs": {"integration_branch": "main", "home": True}},
+                "tools": {"git": {}},
+                "capabilities": {"spec_work": {"tools": ["git"], "repos": []}},
+                "dispatch": {"timeout_seconds": 600}}
+        self.assertEqual(wc.validate_policy(mini), [])
+        self.assertEqual(wc.remote_alias(mini, "docs"), "origin")
+        self.assertEqual(wc.remote_alias(policy(), "app"), "origin")
+        for k in ("repos", "tools", "capabilities", "dispatch"):
+            bad = copy.deepcopy(mini)
+            del bad[k]
+            with self.subTest(missing=k):
+                self.assertTrue(any(k in e for e in wc.validate_policy(bad)))
+        bad = copy.deepcopy(mini)
+        del bad["dispatch"]["timeout_seconds"]
+        self.assertTrue(any("timeout_seconds" in e for e in wc.validate_policy(bad)))
+
+    def test_optional_keys_are_validated_when_present(self):
+        def errs(mut):
+            d = policy()
+            mut(d)
+            return wc.validate_policy(d)
+        cases = {
+            "entry": lambda d: d.__setitem__("entry", "spec"),
+            "test_profiles": lambda d: d["test_profiles"]["unit"].__setitem__("argv", []),
+            "roles": lambda d: d["roles"]["implementer"].pop("model"),
+            "remote_alias": lambda d: d["repos"]["app"].__setitem__("remote_alias", ""),
+            "session_timeout_seconds": lambda d: d["dispatch"].__setitem__("session_timeout_seconds", 0),
+        }
+        for key, mut in cases.items():
+            with self.subTest(key=key):
+                self.assertTrue(any(key in e for e in errs(mut)), errs(mut))
+        for key in ("entry", "test_profiles", "roles"):
+            d = policy()
+            del d[key]
+            d["dispatch"].pop("session_timeout_seconds", None)
+            with self.subTest(absent=key):
+                self.assertEqual(wc.validate_policy(d), [])
 
     def test_exactly_one_home_repo(self):
         none_home = policy()
@@ -153,12 +194,10 @@ class TestSchema(Tmp):
             with self.subTest(v=v):
                 self.assertTrue(any("resources" in e for e in wc.validate_policy(bad)))
 
-    def test_session_timeout_is_required_positive_int(self):
-        for v in (None, 0, -1, "3600", True):
+    def test_session_timeout_is_optional_positive_int(self):
+        for v in (0, -1, "3600", True):
             bad = policy()
             bad["dispatch"]["session_timeout_seconds"] = v
-            if v is None:
-                del bad["dispatch"]["session_timeout_seconds"]
             with self.subTest(v=v):
                 self.assertTrue(any("session_timeout_seconds" in e for e in wc.validate_policy(bad)))
 
@@ -348,7 +387,7 @@ class TestLockWrite(Tmp):
         super().setUp()
         self.inst_file = self.write("plugins/installed_plugins.json", {"version": 2, "plugins": {
             "specflow@mkt": [{"scope": "local", "projectPath": "x", "version": "0.0.1", "gitCommitSha": "1" * 40},
-                             {"scope": "user", "version": "0.1.0", "gitCommitSha": "a" * 40}],
+                             {"scope": "user", "installPath": str(wc.PLUGIN_ROOT), "version": "0.1.0", "gitCommitSha": "a" * 40}],
             "dep@mkt2": [{"scope": "user", "version": "1.0.0", "gitCommitSha": "b" * 40}],
             "unrelated@mkt3": [{"scope": "user", "version": "3.0.0", "gitCommitSha": "e" * 40}]}})
         self.write("plugins/known_marketplaces.json", {
@@ -391,6 +430,42 @@ class TestLockWrite(Tmp):
         _proj, spec = self.make_product()
         pj = self.write("pj3.json", {"name": "nothere", "dependencies": []})
         self.assertEqual(self.run_cli("lock-write", "--product", spec, "--installed", self.inst_file, "--plugin-json", pj)[0], 4)
+
+    def _two_marketplaces(self, here):
+        entry = lambda path, sha: [{"scope": "user", "installPath": str(path), "version": "0.1.0", "gitCommitSha": sha}]
+        return self.write("plugins/two.json", {"version": 2, "plugins": {
+            "specflow@mkt": entry(here, "a" * 40),
+            "specflow@other": entry(self.tmp / "elsewhere", "f" * 40),
+            "dep@mkt2": entry(self.tmp / "dep", "b" * 40)}})
+
+    def test_core_is_the_install_whose_path_is_this_plugin(self):
+        _proj, spec = self.make_product()
+        inst = self._two_marketplaces(wc.PLUGIN_ROOT)
+        self.assertEqual(self.run_cli("lock-write", "--product", spec, "--installed", inst, "--plugin-json", self.pj)[0], 0)
+        lk = json.loads((spec / "workflow.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(lk["core"]["plugin"], "specflow@mkt")
+        # the other marketplace's copy is the one running -> that one is pinned (sorted order would pick specflow@mkt)
+        inst = self.write("plugins/three.json", json.loads(self._two_marketplaces(self.tmp / "x").read_text(encoding="utf-8")))
+        data = json.loads(inst.read_text(encoding="utf-8"))
+        data["plugins"]["specflow@other"][0]["installPath"] = str(wc.PLUGIN_ROOT)
+        inst.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.run_cli("lock-write", "--product", spec, "--installed", inst, "--plugin-json", self.pj)[0], 0)
+        lk = json.loads((spec / "workflow.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(lk["core"]["plugin"], "specflow@other")
+
+    def test_ambiguous_or_unmatched_core_is_exit_2(self):
+        _proj, spec = self.make_product()
+        (spec / "workflow.lock.json").unlink()
+        none_match = self._two_marketplaces(self.tmp / "x")          # neither installPath is this plugin
+        rc, _o, err = self.run_cli("lock-write", "--product", spec, "--installed", none_match, "--plugin-json", self.pj)
+        self.assertEqual(rc, 2)
+        self.assertIn("installPath", err)
+        data = json.loads(none_match.read_text(encoding="utf-8"))
+        for k in ("specflow@mkt", "specflow@other"):
+            data["plugins"][k][0]["installPath"] = str(wc.PLUGIN_ROOT)
+        both = self.write("plugins/both.json", data)
+        self.assertEqual(self.run_cli("lock-write", "--product", spec, "--installed", both, "--plugin-json", self.pj)[0], 2)
+        self.assertFalse((spec / "workflow.lock.json").exists())
 
     def test_default_plugin_json_is_this_plugins(self):
         pj = json.loads((SCRIPTS.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -593,6 +668,17 @@ class TestEffectiveSettings(Tmp):
         self.assertEqual(local["session_start"], ["python x/session_start.py"])
         self.assertNotIn("secret", json.dumps(src))  # permissions are not leaked
         self.assertEqual({s["scope"] for s in wc.effective_settings(root, home)}, {"user", "project", "project-local"})
+
+    def test_cli_settings_without_entry(self):
+        pol = policy()
+        del pol["entry"]
+        _proj, spec = self.make_product(pol=pol)
+        rc, out, err = self.run_cli("settings", "--product", spec)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("fixed entry", out)
+        pol["entry"] = {}
+        (spec / "workflow.json").write_text(json.dumps(pol), encoding="utf-8")
+        self.assertEqual(self.run_cli("settings", "--product", spec)[0], 0)
 
     def test_cli_settings_prints_entry(self):
         proj, spec = self.make_product()

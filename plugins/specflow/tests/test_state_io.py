@@ -470,10 +470,15 @@ class ClaimTest(Tmp):
                 S.acquire_claim(self.rt, "resource", other, resources=res)
         c.release()
         S.acquire_claim(self.rt, "resource", "Dispatch:A4").release()                         # built-in kinds too
-        c = S.acquire_claim(self.rt, "task", "A4")
+
+    def test_task_claims_keep_exact_case(self):
+        """Component ids are case-sensitive (A1 and a1 are different components); only resource names fold case."""
+        c = S.acquire_claim(self.rt, "task", "A1")
+        S.acquire_claim(self.rt, "task", "a1").release()          # a different task: not blocked
         with self.assertRaises(S.ClaimHeld):
-            S.acquire_claim(self.rt, "task", "a4")
+            S.acquire_claim(self.rt, "task", "A1")
         c.release()
+        self.assertEqual(len({S._claim_paths(self.rt, "task", n)[1] for n in ("A1", "a1")}), 2)
 
     def test_two_worktrees_of_one_repo_share_runtime_and_second_claim_is_refused(self):
         repo, wt2 = self.root / "repo", self.root / "wt2"

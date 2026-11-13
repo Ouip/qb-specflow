@@ -49,18 +49,17 @@ from datetime import datetime
 from pathlib import Path
 
 
-def _load_sibling(name: str):
-    """Load a sibling script by file path (the scripts folder is not a package)."""
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+def _load_sibling(name: str, module_name: str):
+    """Load a sibling script by file path under a unique module name (the scripts folder is not a package, and a product
+    adapter may itself be importable as `state_io`; the core must never bind to that)."""
+    spec = importlib.util.spec_from_file_location(module_name, Path(__file__).resolve().parent / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod  # registered before exec: dataclasses look the module up by name
+    sys.modules[module_name] = mod  # registered before exec: dataclasses look the module up by name
     spec.loader.exec_module(mod)
     return mod
 
 
-state_io = _load_sibling("state_io")  # process liveness, /proc, write-once evidence
+state_io = _load_sibling("state_io", "specflow_state_io")  # process liveness, /proc, write-once evidence
 
 STDOUT, STDERR = "stdout.log", "stderr.log"
 PROCESS, CHECKPOINT, CANCEL = "process.json", "checkpoint.json", "cancel.request"

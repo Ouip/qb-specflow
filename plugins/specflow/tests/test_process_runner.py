@@ -32,6 +32,24 @@ def _load(name):
 S = _load("state_io")
 R = _load("process_runner")
 
+
+class SiblingLoadTest(unittest.TestCase):
+    def test_core_does_not_bind_to_a_foreign_state_io_module(self):
+        """A product adapter may itself be importable as `state_io`; the core must still use its own sibling file."""
+        import types
+        fake = types.ModuleType("state_io")
+        fake.__file__ = "adapter/state_io.py"
+        with mock.patch.dict(sys.modules, {"state_io": fake}):
+            spec = importlib.util.spec_from_file_location("specflow_process_runner_probe", SCRIPTS / "process_runner.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["specflow_process_runner_probe"] = mod
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                sys.modules.pop("specflow_process_runner_probe", None)
+        self.assertIsNot(mod.state_io, fake)
+        self.assertEqual(Path(mod.state_io.__file__).resolve(), (SCRIPTS / "state_io.py").resolve())
+
 # Fake CLI. Usage: fake.py <mode> <pids folder> [args...]
 # A grandchild's pid is written to pids/<name>; when a marker is given the grandchild sleeps 3 s, then writes the marker
 # (it only gets written if the grandchild is still alive).
@@ -266,7 +284,8 @@ class StopTest(Base):
     def test_tree_that_cannot_be_confirmed_stopped_is_reported_and_registered(self):
         """Killed but stop cannot be confirmed: process_tree_stopped=False and the survivors go to register (the claim keeps blocking)."""
         seen = []
-        with mock.patch.object(R.ProcessTree, "stop", lambda tree, wait=None: [424242]):
+        real_stop = R.ProcessTree.stop  # really stop the tree (no leaked child), but report a survivor
+        with mock.patch.object(R.ProcessTree, "stop", lambda tree, wait=None: real_stop(tree, wait) or [424242]):
             res = R.run_process(self.argv("hang", ""), self.root, 1, self.root / "r", register=seen.append)
         self.assertFalse(res.process_tree_stopped)
         self.assertEqual(seen[1:], [424242])                       # the main process is registered first, then the survivors
@@ -303,7 +322,7 @@ R.run_process(argv, run.parent, 300, run, register=lambda pid: claim.add_process
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             self.wait_for(lambda: (self.pids / "grand").exists() and (self.pids / "ready").exists(), what="the session to start")
-            meta = json.loads(next((rt / "claims").glob("task-a4.json")).read_text(encoding="utf-8"))
+            meta = json.loads(next((rt / "claims").glob("task-a4*.json")).read_text(encoding="utf-8"))
             self.assertEqual([c["pid"] for c in meta["children"]], [self.pid("ready")])
             self.assertTrue(meta["children"][0]["group"])
         finally:
