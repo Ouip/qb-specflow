@@ -29,10 +29,10 @@ export: writes handoffs/<handoff_id>.json (fixed, never overwritten) and handoff
   checkout (default: the checkout's HEAD); one --ref per repo.
 verify: checks every item of the manifest and lists all problems at once (a timeout on one item does not stop the
   others); without --handoff it reads the root manifest (a local change to that file is a local change in the way,
-  3), and with --fetch a root manifest on the remote branch the
-  handoff was published to (the home repo's ref in the manifest; the integration branch when that ref is HEAD or not
-  tracked here) that names another handoff, on commits this checkout has not pulled, makes it stale (3): pull first.
-  Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
+  3), and with --fetch a newer handoff on the remote makes it stale (3): pull first. Newer: the root manifest on the
+  branch the handoff was published to (the home repo's ref in the manifest), or on the integration branch with a later
+  created_at (the clocks of the writing machines are compared), names another handoff on commits this checkout has
+  not pulled. Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
   the manifest's task_ids are checked.
 report: read-only audit of the handoff as committed now (e.g. one without a manifest): what another machine cannot get.
 None of the commands commits, pushes or changes a working tree. Hashes are always of Git blobs (git cat-file blob),
@@ -1384,26 +1384,46 @@ def cmd_export(a) -> int:
     return code
 
 
+def _later(a, b) -> bool:
+    """a is a later time than b (ISO 8601 with a time zone); False when either is missing or cannot be read."""
+    try:
+        return datetime.fromisoformat(a) > datetime.fromisoformat(b)
+    except (TypeError, ValueError):
+        return False
+
+
 def newer_on_remote(root: Path, cfg: HandoffConfig, policy: dict, alias: str, m: HandoffManifest) -> str | None:
-    """The handoff_id in the root manifest on the remote branch this handoff was published to (the home repo's ref in
-    the manifest, as last fetched; the integration branch when that ref is HEAD or has no remote-tracking ref here) when
-    it names another handoff and that branch has commits this checkout lacks (not pulled yet); None otherwise, also
-    when the remote has no root manifest."""
+    """The handoff_id of a newer handoff on the remote (as last fetched), else None. Read, in this order: the root
+    manifest on the remote branch this handoff was published to (the home repo's ref in the manifest; skipped when that
+    ref is HEAD or has no remote-tracking ref here), then on the integration branch when it is another branch (work
+    published on a branch is often merged there and the next handoff written there). Newer: it names another handoff,
+    on commits this checkout lacks (not pulled yet); on the integration branch, when the published branch was read
+    first, it must also be created later than this one, so an older handoff left there does not count (created_at
+    compares the clocks of the writing machines; missing or unreadable: not newer)."""
     g = Git(root)
     home = next((r for r in m.repos if r["repo_id"] == cfg.home), None)
-    ref = f"refs/remotes/{alias}/{home['ref']}" if home and home["ref"] != "HEAD" else None
-    if ref is None or not g.ok("show-ref", "--verify", "--quiet", ref):
-        ref = f"refs/remotes/{alias}/{policy['repos'][cfg.home]['integration_branch']}"
-    data = g.blob(ref, cfg.root_manifest)
-    if data is None:
-        return None
-    try:
-        rid = json.loads(data.decode("utf-8-sig")).get("handoff_id")
-    except (ValueError, AttributeError):
-        return None
-    if not isinstance(rid, str) or rid == m.handoff_id or g.is_ancestor(ref, "HEAD"):
-        return None
-    return rid
+    rec = f"refs/remotes/{alias}/{home['ref']}" if home and home["ref"] != "HEAD" else None
+    if rec is not None and not g.ok("show-ref", "--verify", "--quiet", rec):
+        rec = None
+    integ = f"refs/remotes/{alias}/{policy['repos'][cfg.home]['integration_branch']}"
+    checks = [(rec, False)] if rec else []
+    if integ != rec:
+        checks.append((integ, rec is not None))
+    for ref, need_later in checks:
+        data = g.blob(ref, cfg.root_manifest)
+        if data is None:
+            continue
+        try:
+            other = json.loads(data.decode("utf-8-sig"))
+            rid = other.get("handoff_id")
+        except (ValueError, AttributeError):
+            continue
+        if not isinstance(rid, str) or rid == m.handoff_id or g.is_ancestor(ref, "HEAD"):
+            continue
+        if need_later and not _later(other.get("created_at"), m.created_at):
+            continue
+        return rid
+    return None
 
 
 def cmd_verify(a) -> int:

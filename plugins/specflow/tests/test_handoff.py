@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -682,6 +683,47 @@ class TestVerifyScenarios(World):
 
     def newer_reasons(self, v):
         return [x["reason"] for x in v["stale"] if x["reason"].startswith("newer handoff")]
+
+    def merged_feature_branch(self, delete):
+        """A publishes H1 on feat, B checks out feat; A merges feat into master and publishes H2 there (feat kept or
+        deleted on the remote; B fetches without prune, so origin/feat stays): B must not call H1 resumable."""
+        h = self.A[self.HOME]
+        git(h, "checkout", "-q", "-b", "feat")
+        git(h, "push", "-q", "-u", "origin", "feat")
+        code, h1 = self.wrapup()
+        self.assertEqual((code, h1["push_rc"]), (0, 0), h1)
+        self.clone_b()
+        git(self.B[self.HOME], "checkout", "-q", "feat")
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"]), (0, "resumable"), b)
+        git(h, "checkout", "-q", "master")
+        git(h, "merge", "-q", "--ff-only", "feat")
+        git(h, "push", "-q", "origin", "master")
+        if delete:
+            git(h, "push", "-q", "origin", "--delete", "feat")
+        time.sleep(1.1)  # created_at has whole seconds: H2 must be written later than H1
+        code, h2 = self.wrapup()
+        self.assertEqual((code, h2["push_rc"]), (0, 0), h2)
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"], b["handoff_id"]), (3, None, h1["handoff_id"]), b)
+        self.assertEqual(self.newer_reasons(b), [f"newer handoff {h2['handoff_id']} on remote; pull first"])
+
+    def test_feature_branch_merged_and_kept_newer_handoff_on_integration_is_stale(self):
+        self.merged_feature_branch(delete=False)
+
+    def test_feature_branch_merged_and_deleted_newer_handoff_on_integration_is_stale(self):
+        self.merged_feature_branch(delete=True)
+
+    def test_later_compares_times_and_never_fails(self):
+        """The integration-branch check compares created_at (the clocks of the writing machines)."""
+        a, b = "2026-11-13T10:00:00+08:00", "2026-11-13T10:00:01+08:00"
+        self.assertTrue(ho._later(b, a))
+        self.assertFalse(ho._later(a, b))
+        self.assertFalse(ho._later(a, a))
+        self.assertTrue(ho._later("2026-11-13T03:00:00+00:00", a))  # 11:00 at +08:00
+        for x, y in ((None, a), (a, None), ("soon", a), (a, 5), ("2026-11-13T10:00:01", a)):
+            with self.subTest(x=x, y=y):
+                self.assertFalse(ho._later(x, y))
 
     def test_newer_handoff_on_the_feature_branch_is_stale_until_pulled(self):
         """The spec repo works on feat (with upstream), not on the integration branch; A pushes H2 to feat, B did not
