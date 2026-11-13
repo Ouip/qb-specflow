@@ -432,6 +432,26 @@ class DispatchTest(Base):
         self.assertEqual(len(r["scope_violations"]), 1, r["scope_violations"])
         self.assertIn(self.base[:12], r["scope_violations"][0])
 
+    def test_base_head_watches_the_branch_it_names_not_the_worktree_head(self):
+        """--base HEAD means the source repo's current branch: the worktree's own HEAD (the run branch tip, which moves
+        with every allowed commit) is not the start ref."""
+        git(self.app, "checkout", "-q", "comp/a1")
+        rc, out = self.dispatch(mode="sneak", frozen=(), allow=("src/a1/**", "include/**"), more=("--base", "HEAD"))
+        self.assertEqual((rc, self.last()[2]["verdict"]), (0, "done"), out)
+        rc, out = self.dispatch(mode="move_base", more=("--base", "HEAD"))  # comp/a1 itself moved: still caught
+        _, _, r = self.last()
+        self.assertEqual((rc, r["verdict"]), (3, "scope_violation"), out)
+        self.assertTrue(any("refs/heads/comp/a1" in v for v in r["scope_violations"]), r["scope_violations"])
+
+    def test_start_without_a_ref_is_not_watched(self):
+        """A bare SHA or a detached HEAD names no ref that a merge could take a moved commit from."""
+        git(self.app, "checkout", "-q", "--detach", "comp/a1")
+        for base in (self.base, "HEAD"):
+            with self.subTest(base=base):
+                rc, out = self.dispatch(mode="sneak", frozen=(), allow=("src/a1/**", "include/**"),
+                                        more=("--base", base))
+                self.assertEqual((rc, self.last()[2]["verdict"]), (0, "done"), out)
+
     def test_worktree_head_off_the_run_branch_is_scope_violation(self):
         r = self.assert_not_done("detach", 3, "scope_violation", "run/")
         self.assertEqual(r["changed_files"], ["src/a1/a.c"])
