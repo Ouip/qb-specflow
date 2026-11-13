@@ -286,6 +286,21 @@ class RegistryTest(Tmp):
         with self.assertRaises(S.ChangeRejected):
             S.update_repo(self.reg, None, "nope", integration_branch="x", runtime=self.rt)
 
+    def test_components_not_a_list_of_objects_is_refused_untouched(self):
+        """An update rewrites the whole file: a components value of another shape would be lost (an object became a
+        list of its keys)."""
+        for comps in ({"C0": comp("C0")}, ["C0"], None, "x"):
+            with self.subTest(comps=comps):
+                raw = json.dumps({"format": 1, "states": STATES, "repos": {"app": {"integration_branch": "main"}},
+                                  "components": comps}).encode("utf-8")
+                self.reg.write_bytes(raw)
+                for call in (lambda: S.update_repo(self.reg, None, "app", integration_branch="dev", runtime=self.rt),
+                             lambda: self.update(S.RegistryChange("C0", blocked="x"))):
+                    with self.assertRaises(S.StateError) as cm:
+                        call()
+                    self.assertEqual(cm.exception.code, 2)
+                    self.assertEqual(self.reg.read_bytes(), raw)
+
     def test_broken_json_is_not_overwritten(self):
         self.reg.write_text("{ broken", encoding="utf-8")
         with self.assertRaises(S.StateError):

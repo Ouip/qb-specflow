@@ -22,8 +22,9 @@ Boundaries:
 `expected_revision=None` means "the caller holds no revision" and is the same idea everywhere, but what a function can do
 with that depends on whether the file must already exist:
 - cas_write / write_handoff: None = create only. The file must not exist yet; if it does, RevisionConflict.
-- update_registry / update_repo: the file must exist (it is edited, never created). None = no revision check; the change
-  is validated and applied under the lock against the CURRENT content, so no other writer's update is lost.
+- update_registry / update_repo: the file must exist (it is edited, never created) and its "components" must be a list
+  of objects (otherwise StateError, file untouched). None = no revision check; the change is validated and applied under
+  the lock against the CURRENT content, so no other writer's update is lost.
 In both cases a str revision that is no longer current raises RevisionConflict carrying the current revision.
 
 Exceptions inherit StateError; `code` maps to the exit codes: 1 input refused, 2 environment/format, 3 conflict
@@ -395,6 +396,10 @@ def _update_json(path: Path, expected_revision, mutate, runtime, timeout) -> dic
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise StateError(f"{path} is not valid JSON: {e} (not overwritten; fix the file first)")
+        comps = data.get("components") if isinstance(data, dict) else None
+        if not (isinstance(comps, list) and all(isinstance(c, dict) for c in comps)):
+            # the whole file is rewritten in the fixed layout: another shape would be lost, so nothing is written
+            raise StateError(f"{path}: \"components\" must be a list of objects (not overwritten; fix the file first)")
         result = mutate(data)
         out = dump_registry(data)
         if out != raw:

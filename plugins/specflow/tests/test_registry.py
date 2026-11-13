@@ -548,6 +548,16 @@ class CommandsTest(Product):
         self.assertRegex(out, r"legacy: A1 .*g4, g5, merge")
         self.assertNotIn("legacy: B1", out)                   # the first status has no rule into it
 
+    def test_repo_refuses_components_as_an_object_and_leaves_the_file(self):
+        data = self.save([comp("A1")])
+        data["components"] = {"A1": data["components"][0]}
+        raw = json.dumps(data).encode("utf-8")
+        self.reg.write_bytes(raw)
+        rc, out = self.cli("repo", "app", "--integration-branch", "dev")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("components", out)
+        self.assertEqual(self.reg.read_bytes(), raw)
+
     def test_rework_rule_does_not_hide_a_legacy_row(self):
         """A rework rule needs no evidence, so it is no way into a status that a row without evidence could have taken."""
         self.save([comp("A1", "Awaiting hardware")])     # forward rule needs int; rework Done -> here needs nothing
