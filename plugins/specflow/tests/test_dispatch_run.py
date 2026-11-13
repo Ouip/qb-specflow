@@ -181,6 +181,16 @@ elif mode in ("sneak", "detach"):
     else:
         subprocess.run([*G, "checkout", "-q", "--detach"], check=True, capture_output=True)
     report()
+elif mode == "move_base":
+    # worktrees share refs: commit a frozen change, move the start ref comp/a1 onto it, put the run branch back
+    G = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-C", str(wt)]
+    edit("include/a1.h")
+    subprocess.run([*G, "add", "-A"], check=True, capture_output=True)
+    subprocess.run([*G, "commit", "-q", "-m", "x"], check=True, capture_output=True)
+    subprocess.run([*G, "update-ref", "refs/heads/comp/a1", "HEAD"], check=True, capture_output=True)
+    subprocess.run([*G, "reset", "-q", "--hard", "HEAD~1"], check=True, capture_output=True)
+    edit("src/a1/a.c")
+    report()
 '''
 
 
@@ -414,6 +424,13 @@ class DispatchTest(Base):
         self.assertEqual(S.list_claims(self.runtime), [])
         self.assertEqual(git(self.app, "branch", "--list", "run/*"), "")
         self.assertFalse((self.log / "args.json").exists())
+
+    def test_start_ref_moved_during_the_run_is_scope_violation(self):
+        """A commit moved onto the start ref (shared with the repo) is in no diff of the run, but it would be merged."""
+        r = self.assert_not_done("move_base", 3, "scope_violation", "comp/a1")
+        self.assertEqual(r["changed_files"], ["src/a1/a.c"])
+        self.assertEqual(len(r["scope_violations"]), 1, r["scope_violations"])
+        self.assertIn(self.base[:12], r["scope_violations"][0])
 
     def test_worktree_head_off_the_run_branch_is_scope_violation(self):
         r = self.assert_not_done("detach", 3, "scope_violation", "run/")

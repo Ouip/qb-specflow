@@ -56,7 +56,9 @@ the run does not count).
 Limits (also written into every manifest): a git worktree is not an OS sandbox, the tool can still write outside it. The
 scope check only sees what git reports, in the worktree and on branch run/<run id> together (commits, tracked changes
 and untracked files that are not ignored; a worktree no longer on that branch is a scope violation); ignored files and
-writes outside the worktree are not seen. On Windows a process started inside WSL that detaches itself is not in the Job
+writes outside the worktree are not seen. A worktree shares refs with its repo: a start ref (--base / comp/<name>) that
+no longer points at the start commit when judging is a scope violation; other refs the tool may write (e.g. git
+update-ref on another branch) are not checked. On Windows a process started inside WSL that detaches itself is not in the Job
 Object, so process_tree_stopped only speaks for the Windows side (see process_runner.py). Nothing here cleans up a
 worktree or merges a branch: a person reviews run/<run id> and merges it.
 """
@@ -116,6 +118,8 @@ LIMITS = [
     "not an OS sandbox: the implementer can write anywhere its user can",
     "the scope check sees only what git reports in the worktree and on branch run/<run id> (commits, tracked changes "
     "and untracked files that are not ignored); ignored files and writes outside the worktree are not seen",
+    "a worktree shares refs with its repo: a start ref that moved off the start commit is a scope violation; other "
+    "refs the implementer may write are not checked",
     "on Windows a process started inside WSL that detaches itself is not in the Job Object; process_tree_stopped "
     "only speaks for the Windows side",
     "no automatic worktree cleanup and no automatic merge: a person reviews and merges the run/<run id> branch",
@@ -390,6 +394,18 @@ def head_problem(wt, branch) -> str | None:
             f"{branch} brings cannot be verified from the worktree)")
 
 
+def base_ref_problem(wt, base_ref, base_sha) -> str | None:
+    """The start ref must still point at the start commit: a worktree shares refs with its repo, so a commit moved onto
+    it (git update-ref, git push . HEAD:<ref>) is in no diff of this run but would reach a merge."""
+    r = subprocess.run(["git", "-C", str(wt), "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
+                       capture_output=True)
+    now = r.stdout.decode("utf-8", "replace").strip() if r.returncode == 0 else ""
+    if now == base_sha:
+        return None
+    return (f"(the start ref {base_ref} moved during the run: it was {base_sha[:12]}, now "
+            f"{now[:12] or 'it does not resolve'}; what was put there is not in the scope check)")
+
+
 def _process_facts(res):
     return {"exit_code": res.exit_code, "timed_out": res.timed_out, "cancelled": res.cancelled,
             "process_tree_stopped": res.process_tree_stopped}
@@ -403,8 +419,9 @@ def _verdict(res, violations, problems, status):
         (4, status) if status in ("partial", "blocked") else (0, "done")
 
 
-def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cfg, schema):
-    """Verdict of a dispatch run, from this run's directory and worktree only. cfg: the dispatch.report block; schema:
+def judge_dispatch(res, run_dir, wt, base_ref, base_sha, task_id, units, allow, frozen, cfg, schema):
+    """Verdict of a dispatch run, from this run's directory and worktree only. base_ref / base_sha: the start ref as
+    given and the commit it pointed at when the run started. cfg: the dispatch.report block; schema:
     the report schema as read from the product folder when the run started (never re-read: the run directory copy is
     writable by the tool, and a change in the product folder during the run does not count). Returns result.json's content."""
     run_dir = Path(run_dir)
@@ -414,9 +431,9 @@ def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cf
                   for f in changed if in_scope(f, frozen) or not in_scope(f, allow)]
     if err:
         violations.append(f"(cannot list the changes, so the scope cannot be verified: {err})")
-    head = head_problem(wt, branch)
-    if head:
-        violations.append(head)
+    for v in (head_problem(wt, branch), base_ref_problem(wt, base_ref, base_sha)):
+        if v:
+            violations.append(v)
     path = run_dir / "report.json"
     rep, problems = check_report(path, schema, units, cfg)
     if res.exit_code != 0 and not (res.timed_out or res.cancelled):
@@ -627,7 +644,7 @@ def cmd_run(a) -> int:
                                          env=process_runner.child_env(run_dir),
                                          register=lambda pid: claim.add_process(pid, group=True))
         try:
-            result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, frozen, rcfg, schema)
+            result = judge_dispatch(res, run_dir, wt, base_ref, base_sha, a.task, units, a.allow, frozen, rcfg, schema)
         except Exception as e:  # noqa: BLE001 - a judge failure is a run without evidence, never one without result.json
             result = unjudged(res, run_dir, wt, a.task, e)
         process_runner.write_once(run_dir / "result.json", result)
