@@ -35,7 +35,7 @@ e. `<handoff.py> export --task <id>… --handoff-id <ID> --json`: one `--task` p
    - 4 with `level` null → content the handoff needs is uncommitted or untracked (`pending_transfers`). Your own file: commit it (a) or add it (d), then once more from b with a new ID. Another session's file, or the second try → stop and paste those entries.
    - 3 → the ID is taken or something conflicts: once more from b with a new ID; 3 again → stop and paste the output.
    - 2 or anything else → stop and paste the output; its `error` names the cause (a suspected secret, a handoff file over 5120 bytes, bad input). Nothing was written.
-f. `git add -- <commit_paths>`, then `git commit -- <your own paths> <commit_paths>` (`commit_paths` from the export JSON).
+f. `git add -- <commit_paths>`, then `git commit -- <your own paths> <commit_paths>`: your own paths are those from d, `commit_paths` comes from the export JSON; never a path from the other pile (step 2).
 g. Push the spec repo (step 5).
 h. `<handoff.py> verify --fetch --json`. Only `published: true` here may be called "published" (exit 0, or 5 when a capability is missing on this machine). Otherwise report the export's level and every entry of `missing`, `stale`, `local_dirty` and `timed_out` verbatim.
 
