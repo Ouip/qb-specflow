@@ -548,6 +548,20 @@ class CommandsTest(Product):
         self.assertRegex(out, r"legacy: A1 .*g4, g5, merge")
         self.assertNotIn("legacy: B1", out)                   # the first status has no rule into it
 
+    def test_rework_rule_does_not_hide_a_legacy_row(self):
+        """A rework rule needs no evidence, so it is no way into a status that a row without evidence could have taken."""
+        self.save([comp("A1", "Awaiting hardware")])     # forward rule needs int; rework Done -> here needs nothing
+        rc, out = self.cli("check")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"legacy: A1 .*from Awaiting integration: int")
+        self.assertNotIn("from Done", out)
+        self.set_policy(policy([{"from": "Not started", "to": "In progress", "needs": ["dispatch"]},
+                                {"from": "In progress", "to": "Not started", "rework": True}]))
+        self.save([comp("B1")])                          # only a rework rule leads into Not started: no warning
+        rc, out = self.cli("check")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("legacy", out)
+
     def test_add_repo_and_claims(self):
         self.save([comp("A1", "Done")])
         (self.product / "N1-new.md").write_text("x", encoding="utf-8")

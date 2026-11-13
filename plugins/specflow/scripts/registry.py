@@ -215,16 +215,19 @@ def evidence_failures(data: dict, root: Path) -> list[str]:
 
 def legacy_warnings(data: dict, rules) -> list[str]:
     """Components whose evidence does not satisfy any rule into their current status (e.g. set before the rules
-    existed). Reported, never a failure: the status stays, the next change goes through the rules."""
-    if not rules:
+    existed). Reported, never a failure: the status stays, the next change goes through the rules. Only forward rules
+    count: a rework rule needs no evidence, so it would excuse every row (a status with only rework rules into it gets
+    no warning)."""
+    fwd = [r for r in rules or () if not r.get("rework")]
+    if not fwd:
         return []
     out = []
     for c in data.get("components") or []:
         if not (isinstance(c, dict) and "status" in c):
             continue
         cur, repo = c["status"], c.get("repo")
-        into = [x for x in (state_io.find_transition(rules, f, cur, repo)
-                            for f in dict.fromkeys(r["from"] for r in rules if r["to"] == cur)) if x]
+        into = [x for x in (state_io.find_transition(fwd, f, cur, repo)
+                            for f in dict.fromkeys(r["from"] for r in fwd if r["to"] == cur)) if x]
         have = {e.get("kind") for e in c.get("evidence") or [] if isinstance(e, dict)}
         if into and not any(set(x.get("needs") or ()) <= have for x in into):
             need = "; ".join(f"from {x['from']}: {', '.join(k for k in x['needs'] if k not in have)}" for x in into)
