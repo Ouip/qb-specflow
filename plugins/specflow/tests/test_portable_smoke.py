@@ -302,7 +302,8 @@ class PortableSmoke(unittest.TestCase):
         r = w.ho(w.a_prod, "verify", "--fetch", "--json")
         v = json.loads(r.stdout)
         self.assertTrue(v["published"], r.all)
-        self.assertIn(v["level"], ("published", "resumable"))
+        # A has what spec_work (the default capability) needs, measured on this machine: published and resumable
+        self.assertEqual(v["level"], "resumable", r.all)
         self.assertEqual(v["handoff_id"], hid)
 
         # the other session's files: still uncommitted, in no commit
