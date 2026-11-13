@@ -28,9 +28,10 @@ export: writes handoffs/<handoff_id>.json (fixed, never overwritten) and handoff
   refused. --ref app=task/a1 records the commit of a WIP task branch (or task worktree) without switching the mapped
   checkout (default: the checkout's HEAD); one --ref per repo.
 verify: checks every item of the manifest and lists all problems at once (a timeout on one item does not stop the
-  others); without --handoff it reads the root manifest, and with --fetch a root manifest on the home repo's remote
-  integration branch that names another handoff, on commits this checkout has not pulled, makes it stale (3): pull
-  first. Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
+  others); without --handoff it reads the root manifest, and with --fetch a root manifest on the remote branch the
+  handoff was published to (the home repo's ref in the manifest; the integration branch when that ref is HEAD or not
+  tracked here) that names another handoff, on commits this checkout has not pulled, makes it stale (3): pull first.
+  Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
   the manifest's task_ids are checked.
 report: read-only audit of the handoff as committed now (e.g. one without a manifest): what another machine cannot get.
 None of the commands commits, pushes or changes a working tree. Hashes are always of Git blobs (git cat-file blob),
@@ -1382,12 +1383,16 @@ def cmd_export(a) -> int:
     return code
 
 
-def newer_on_remote(root: Path, cfg: HandoffConfig, policy: dict, alias: str, handoff_id: str) -> str | None:
-    """The handoff_id in the root manifest on the home repo's remote integration branch (as last fetched) when it names
-    another handoff and that branch has commits this checkout lacks (not pulled yet); None otherwise, also when the
-    remote has no root manifest."""
+def newer_on_remote(root: Path, cfg: HandoffConfig, policy: dict, alias: str, m: HandoffManifest) -> str | None:
+    """The handoff_id in the root manifest on the remote branch this handoff was published to (the home repo's ref in
+    the manifest, as last fetched; the integration branch when that ref is HEAD or has no remote-tracking ref here) when
+    it names another handoff and that branch has commits this checkout lacks (not pulled yet); None otherwise, also
+    when the remote has no root manifest."""
     g = Git(root)
-    ref = f"refs/remotes/{alias}/{policy['repos'][cfg.home]['integration_branch']}"
+    home = next((r for r in m.repos if r["repo_id"] == cfg.home), None)
+    ref = f"refs/remotes/{alias}/{home['ref']}" if home and home["ref"] != "HEAD" else None
+    if ref is None or not g.ok("show-ref", "--verify", "--quiet", ref):
+        ref = f"refs/remotes/{alias}/{policy['repos'][cfg.home]['integration_branch']}"
     data = g.blob(ref, cfg.root_manifest)
     if data is None:
         return None
@@ -1395,7 +1400,7 @@ def newer_on_remote(root: Path, cfg: HandoffConfig, policy: dict, alias: str, ha
         rid = json.loads(data.decode("utf-8-sig")).get("handoff_id")
     except (ValueError, AttributeError):
         return None
-    if not isinstance(rid, str) or rid == handoff_id or g.is_ancestor(ref, "HEAD"):
+    if not isinstance(rid, str) or rid == m.handoff_id or g.is_ancestor(ref, "HEAD"):
         return None
     return rid
 
@@ -1406,7 +1411,7 @@ def cmd_verify(a) -> int:
     m = load_manifest(root, cfg, a.handoff, fetch_alias=alias)
     chk = verify_handoff(m, local, a.fetch, policy=policy, capabilities=a.for_caps)
     if a.fetch and a.handoff is None:  # the root manifest here may be an older one than the remote's
-        newer = newer_on_remote(root, cfg, policy, alias, m.handoff_id)
+        newer = newer_on_remote(root, cfg, policy, alias, m)
         if newer:
             chk.add("stale", f"handoff:{newer}", f"newer handoff {newer} on remote; pull first")
     res = {**chk.to_dict(), "command": "verify", "handoff_id": m.handoff_id, "source_machine": m.source_machine,

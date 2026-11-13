@@ -680,6 +680,61 @@ class TestVerifyScenarios(World):
         code, a = self.cli("A", "verify", "--fetch")
         self.assertEqual((code, a["stale"]), (0, []), a)
 
+    def newer_reasons(self, v):
+        return [x["reason"] for x in v["stale"] if x["reason"].startswith("newer handoff")]
+
+    def test_newer_handoff_on_the_feature_branch_is_stale_until_pulled(self):
+        """The spec repo works on feat (with upstream), not on the integration branch; A pushes H2 to feat, B did not
+        pull: the remote branch the handoff was published to decides."""
+        h = self.A[self.HOME]
+        git(h, "checkout", "-q", "-b", "feat")
+        git(h, "push", "-q", "-u", "origin", "feat")
+        code, h1 = self.wrapup()
+        self.assertEqual((code, h1["push_rc"]), (0, 0), h1)
+        self.clone_b()
+        git(self.B[self.HOME], "checkout", "-q", "feat")
+        code, h2 = self.wrapup()
+        self.assertEqual((code, h2["push_rc"]), (0, 0), h2)
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"], b["handoff_id"]), (3, None, h1["handoff_id"]), b)
+        self.assertEqual(self.newer_reasons(b), [f"newer handoff {h2['handoff_id']} on remote; pull first"])
+        git(self.B[self.HOME], "pull", "-q", "--ff-only")
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"], b["handoff_id"]), (0, "resumable", h2["handoff_id"]), b)
+
+    def test_source_on_a_feature_branch_is_not_stale_when_the_integration_branch_moves(self):
+        """H0 was exported on master; A then works on feat while someone else moves master; A's own H1 on feat is not
+        superseded by the older H0 on master."""
+        code, h0 = self.wrapup()
+        self.assertEqual((code, h0["push_rc"]), (0, 0), h0)
+        h = self.A[self.HOME]
+        git(h, "checkout", "-q", "-b", "feat")
+        git(h, "push", "-q", "-u", "origin", "feat")
+        c = self.base / "C"
+        git(self.base, "clone", "-q", str(self.remote[self.HOME]), str(c))
+        write(c / "wiki/other.md", "x\n")
+        git(c, "add", "-A")
+        git(c, "commit", "-q", "-m", "other")
+        git(c, "push", "-q", "origin", "master")
+        code, h1 = self.wrapup()
+        self.assertEqual((code, h1["push_rc"]), (0, 0), h1)
+        code, a = self.cli("A", "verify", "--fetch")
+        self.assertEqual((code, a["level"], a["handoff_id"], a["stale"]), (0, "resumable", h1["handoff_id"], []), a)
+
+    def test_local_commit_and_newer_handoff_on_remote_is_stale(self):
+        """B has a commit of its own (not pushed) and did not pull A's H2."""
+        code, h1 = self.wrapup()
+        self.clone_b()
+        b = self.B[self.HOME]
+        write(b / "wiki/b.md", "b\n")
+        git(b, "add", "-A")
+        git(b, "commit", "-q", "-m", "b local")
+        code, h2 = self.wrapup()
+        self.assertEqual((code, h2["push_rc"]), (0, 0), h2)
+        code, v = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, v["level"], v["handoff_id"]), (3, None, h1["handoff_id"]), v)
+        self.assertEqual(self.newer_reasons(v), [f"newer handoff {h2['handoff_id']} on remote; pull first"])
+
     def test_code_push_failure(self):
         self.reject_pushes("app")
         new = self.app_commit("docs/reviews/A1-g6.md", "G6\n")
