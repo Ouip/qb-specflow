@@ -661,6 +661,25 @@ class TestVerifyScenarios(World):
         self.assertEqual(b["handoff_id"], out["handoff_id"])
         self.assertNotEqual(self.A["app"], self.B["app"])
 
+    def test_newer_handoff_on_remote_is_stale_until_pulled(self):
+        """B still has H1 checked out (it did not pull), A pushed H2: verify --fetch must not call H1 resumable."""
+        code, h1 = self.wrapup()
+        self.assertEqual((code, h1["push_rc"]), (0, 0), h1)
+        self.clone_b()
+        code, h2 = self.wrapup()
+        self.assertEqual((code, h2["push_rc"]), (0, 0), h2)
+        self.assertNotEqual(h1["handoff_id"], h2["handoff_id"])
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"], b["handoff_id"]), (3, None, h1["handoff_id"]), b)
+        self.assertIn(f"newer handoff {h2['handoff_id']} on remote; pull first", [x["reason"] for x in b["stale"]])
+        code, b = self.cli("B", "verify", "--fetch", "--handoff", h1["handoff_id"])  # asked for H1 by name: checked as is
+        self.assertEqual((code, b["level"]), (0, "resumable"), b)
+        git(self.B["spec"], "pull", "-q", "--ff-only")
+        code, b = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, b["level"], b["handoff_id"]), (0, "resumable", h2["handoff_id"]), b)
+        code, a = self.cli("A", "verify", "--fetch")
+        self.assertEqual((code, a["stale"]), (0, []), a)
+
     def test_code_push_failure(self):
         self.reject_pushes("app")
         new = self.app_commit("docs/reviews/A1-g6.md", "G6\n")
