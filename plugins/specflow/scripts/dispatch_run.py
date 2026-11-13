@@ -43,7 +43,8 @@ report schema is read from the product folder, never from the run directory (the
 recorded in the manifest and checked again when judging.
 
 Limits (also written into every manifest): a git worktree is not an OS sandbox, the tool can still write outside it. The
-scope check only sees what git reports: tracked changes and untracked files that are not ignored; ignored files and
+scope check only sees what git reports, in the worktree and on branch run/<run id> together (commits, tracked changes
+and untracked files that are not ignored; a worktree no longer on that branch is a scope violation); ignored files and
 writes outside the worktree are not seen. On Windows a process started inside WSL that detaches itself is not in the Job
 Object, so process_tree_stopped only speaks for the Windows side (see process_runner.py). Nothing here cleans up a
 worktree or merges a branch: a person reviews run/<run id> and merges it.
@@ -101,8 +102,8 @@ ISOLATION = ("git worktree: its own working directory, index, build output, logs
              "the actual changes")
 LIMITS = [
     "not an OS sandbox: the implementer can write anywhere its user can",
-    "the scope check sees only what git reports (tracked changes and untracked files that are not ignored); "
-    "ignored files and writes outside the worktree are not seen",
+    "the scope check sees only what git reports in the worktree and on branch run/<run id> (commits, tracked changes "
+    "and untracked files that are not ignored); ignored files and writes outside the worktree are not seen",
     "on Windows a process started inside WSL that detaches itself is not in the Job Object; process_tree_stopped "
     "only speaks for the Windows side",
     "no automatic worktree cleanup and no automatic merge: a person reviews and merges the run/<run id> branch",
@@ -250,15 +251,28 @@ def check_report(path, schema: dict, units: list[str], cfg: dict):
     return rep, probs
 
 
-def changed_files(wt, base_sha):
-    """What the worktree changed against the base (commits, uncommitted, untracked; not what git ignores): (list, error or None)."""
+def changed_files(wt, base_sha, branch):
+    """What the run changed against the base: the worktree (commits, uncommitted, untracked; not what git ignores) and
+    the branch a person merges (refs/heads/<branch>), together: (list, error or None)."""
     out = set()
-    for args in (["diff", "--name-only", "--no-renames", "-z", base_sha], ["ls-files", "--others", "--exclude-standard", "-z"]):
+    for args in (["diff", "--name-only", "--no-renames", "-z", base_sha],
+                 ["diff", "--name-only", "--no-renames", "-z", base_sha, f"refs/heads/{branch}", "--"],
+                 ["ls-files", "--others", "--exclude-standard", "-z"]):
         r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True)
         if r.returncode:
             return sorted(out), r.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed"
         out |= {x.decode("utf-8", "replace") for x in r.stdout.split(b"\0") if x}
     return sorted(out), None
+
+
+def head_problem(wt, branch) -> str | None:
+    """The worktree must still be on refs/heads/<branch>: otherwise what it holds is not what the branch brings."""
+    r = subprocess.run(["git", "-C", str(wt), "symbolic-ref", "-q", "HEAD"], capture_output=True)
+    head = r.stdout.decode("utf-8", "replace").strip() if r.returncode == 0 else ""
+    if head == f"refs/heads/{branch}":
+        return None
+    return (f"(the worktree HEAD is {head or 'detached'}, not refs/heads/{branch}: the scope of what a merge of "
+            f"{branch} brings cannot be verified from the worktree)")
 
 
 def _process_facts(res):
@@ -286,11 +300,15 @@ def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cf
     """Verdict of a dispatch run, from this run's directory and worktree only. cfg: the dispatch.report block;
     schema_path / schema_sha: the product schema file and the hash recorded when the run started. Returns result.json's content."""
     run_dir = Path(run_dir)
-    changed, err = changed_files(wt, base_sha)
+    branch = f"run/{run_dir.name}"
+    changed, err = changed_files(wt, base_sha, branch)
     violations = [f"{f} (frozen)" if in_scope(f, frozen) else f"{f} (outside the allowed scope)"
                   for f in changed if in_scope(f, frozen) or not in_scope(f, allow)]
     if err:
         violations.append(f"(cannot list the changes, so the scope cannot be verified: {err})")
+    head = head_problem(wt, branch)
+    if head:
+        violations.append(head)
     schema, schema_err = read_schema(schema_path, schema_sha)
     path = run_dir / "report.json"
     rep, problems = check_report(path, schema or {}, units, cfg)

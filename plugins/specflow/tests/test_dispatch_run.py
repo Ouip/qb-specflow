@@ -161,6 +161,18 @@ elif mode == "leftover":
     grandchild(detach=True)
     edit("src/a1/a.c")
     report()
+elif mode in ("sneak", "detach"):
+    G = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-C", str(wt)]
+    edit("src/a1/a.c")
+    if mode == "sneak":
+        # commit a frozen file on the run branch, then put the base content back in the worktree only
+        edit("include/a1.h")
+        subprocess.run([*G, "add", "-A"], check=True, capture_output=True)
+        subprocess.run([*G, "commit", "-q", "-m", "x"], check=True, capture_output=True)
+        subprocess.run([*G, "checkout", "HEAD~1", "--", "include/a1.h"], check=True, capture_output=True)
+    else:
+        subprocess.run([*G, "checkout", "-q", "--detach"], check=True, capture_output=True)
+    report()
 '''
 
 
@@ -366,6 +378,16 @@ class DispatchTest(Base):
     def test_frozen_path_change_is_scope_violation(self):
         r = self.assert_not_done("frozen", 3, "scope_violation", "include/a1.h")
         self.assertEqual(r["scope_violations"], ["include/a1.h (frozen)"])
+
+    def test_frozen_change_on_the_run_branch_restored_in_the_worktree_is_scope_violation(self):
+        """The scope check covers what a person merges (branch run/<run id>), not only the worktree."""
+        r = self.assert_not_done("sneak", 3, "scope_violation", "include/a1.h")
+        self.assertEqual(r["scope_violations"], ["include/a1.h (frozen)"])
+        self.assertEqual(r["changed_files"], ["include/a1.h", "src/a1/a.c"])
+
+    def test_worktree_head_off_the_run_branch_is_scope_violation(self):
+        r = self.assert_not_done("detach", 3, "scope_violation", "run/")
+        self.assertEqual(r["changed_files"], ["src/a1/a.c"])
 
     def test_untracked_file_outside_allowed_is_scope_violation(self):
         r = self.assert_not_done("outside", 3, "scope_violation", "docs/x.md")
