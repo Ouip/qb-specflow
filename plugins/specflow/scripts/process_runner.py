@@ -51,11 +51,27 @@ from pathlib import Path
 
 def _load_sibling(name: str, module_name: str):
     """Load a sibling script by file path under a unique module name (the scripts folder is not a package, and a product
-    adapter may itself be importable as `state_io`; the core must never bind to that)."""
-    spec = importlib.util.spec_from_file_location(module_name, Path(__file__).resolve().parent / f"{name}.py")
+    adapter may itself be importable as `state_io`; the core must never bind to that). One copy per process: a module
+    already loaded under module_name from this very file is reused (so every core module shares its classes and KEEP);
+    one from another path (e.g. another plugin version) is not. A failed load leaves sys.modules as it was."""
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    old = sys.modules.get(module_name)
+    try:
+        if old is not None and Path(old.__file__).resolve() == path:
+            return old
+    except (AttributeError, TypeError, OSError):
+        pass
+    spec = importlib.util.spec_from_file_location(module_name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod  # registered before exec: dataclasses look the module up by name
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        if old is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = old
+        raise
     return mod
 
 

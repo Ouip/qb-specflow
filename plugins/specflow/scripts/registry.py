@@ -7,7 +7,7 @@ components.json and workflow.json sit in the product folder (the spec folder tha
   python registry.py show                                   components, what can be worked on next, the revision
   python registry.py check                                  structure, rules, referenced evidence; legacy warnings
   python registry.py set <id> [--status S] [--block REASON | --unblock] [--deps [ID ...]]
-                              [--evidence KIND=PATH ...] [--reason TEXT] [--expect REVISION]
+                              [--evidence KIND=PATH ...] [--reason TEXT] [--expect REVISION] [--json]
   python registry.py add <id> --name N --spec FILE --repo R [--deps ID ...] [--expect REVISION]
   python registry.py repo <repo id> [--integration-branch B] [--baseline CMD ...] [--expect REVISION]
   python registry.py claims                                 claims on this machine and whether their owners still run
@@ -17,13 +17,16 @@ Status rules are policy, in workflow.json (both optional):
   "evidence_kinds": {KIND: {"human": true}}
 Without transitions any status in states.order is accepted and set says so. With them a status change needs the one
 rule for (current status, target, the component's repo; a rule listing the repo wins over one without repos), every
-kind in its needs given with --evidence in the same call (an existing file; its sha256 is recorded), and --reason for a
-rework rule; the row's evidence becomes exactly the refs given, and set reports forward or rework. The rule is decided
-under the registry lock on the row as it is then. --expect turns on CAS; without it the change applies to the current
-file. A human kind is never written by the core (record_evidence refuses it); it can only be referenced.
+kind in its needs given with --evidence in the same call (an existing file; its sha256 is recorded; refs already on the
+row do not count), and --reason for a rework rule (printed, not stored); set reports forward or rework. Evidence refs
+only accumulate on the row; nothing removes one. The rule is decided under the registry lock on the row as it is then.
+Rules that do not fit components.json (a status not in states.order, a repo id not in its repos, a rework rule that does
+not move back in states.order) fail check and refuse every status change. --expect turns on CAS; without it the change
+applies to the current file. A human kind is never written by the core (record_evidence refuses it); it can only be
+referenced.
 
-Exit codes: 0 pass, 1 refused (no rule, rework without reason, bad change), 2 input / format (incl. rules naming a
-status not in states.order), 3 conflict (stale --expect revision, claim held), 4 missing (evidence or a needed kind,
+Exit codes: 0 pass, 1 refused (no rule, rework without reason, bad change), 2 input / format (incl. rules that do not
+fit components.json), 3 conflict (stale --expect revision, claim held), 4 missing (evidence or a needed kind,
 workflow.json, components.json), 6 lock wait timed out.
 """
 from __future__ import annotations
@@ -43,11 +46,27 @@ NO_RULES = "no transition rules in workflow.json: any status in states.order is 
 
 def _load_sibling(name: str, module_name: str):
     """Load a sibling script by file path under a unique module name (the scripts folder is not a package, and a product
-    adapter may itself be importable under the plain name; the core must never bind to that)."""
-    spec = importlib.util.spec_from_file_location(module_name, Path(__file__).resolve().parent / f"{name}.py")
+    adapter may itself be importable under the plain name; the core must never bind to that). One copy per process: a
+    module already loaded under module_name from this very file is reused (so every core module shares its classes and
+    KEEP); one from another path (e.g. another plugin version) is not. A failed load leaves sys.modules as it was."""
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    old = sys.modules.get(module_name)
+    try:
+        if old is not None and Path(old.__file__).resolve() == path:
+            return old
+    except (AttributeError, TypeError, OSError):
+        pass
+    spec = importlib.util.spec_from_file_location(module_name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod  # registered before exec: dataclasses look the module up by name
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        if old is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = old
+        raise
     return mod
 
 
@@ -194,13 +213,6 @@ def evidence_failures(data: dict, root: Path) -> list[str]:
     return out
 
 
-def rule_problems(data: dict, rules) -> list[str]:
-    """Every status a rule names must be in states.order of components.json (else set refuses every status change)."""
-    order = ((data.get("states") or {}).get("order") or []) if isinstance(data.get("states"), dict) else []
-    unknown = sorted({r[k] for r in rules or () for k in ("from", "to")} - set(order))
-    return [f"transitions in workflow.json name statuses not in states.order: {', '.join(unknown)}"] if unknown else []
-
-
 def legacy_warnings(data: dict, rules) -> list[str]:
     """Components whose evidence does not satisfy any rule into their current status (e.g. set before the rules
     existed). Reported, never a failure: the status stays, the next change goes through the rules."""
@@ -277,7 +289,7 @@ def cmd_check(a) -> int:
     policy = load_policy(a.product)
     rules = transitions(policy)
     data, _rev = load_registry(a.product)
-    fails = problems(data, a.product) + rule_problems(data, rules)
+    fails = problems(data, a.product) + (state_io.rule_problems(rules, data) if rules else [])
     fails += evidence_failures(data, evidence_root(a.product))
     for m in fails:
         print(f"  [fail] {m}")
@@ -309,10 +321,15 @@ def cmd_set(a) -> int:
     res = set_component(a.product, a.id, status=a.status, blocked=blocked, deps=a.deps,
                         evidence=_parse_evidence(a.product, a.evidence), reason=a.reason, expect=a.expect,
                         policy=policy)
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
     c = res["component"]
     moved = f"{res['status_before']} -> {c['status']} ({res['direction']})" if res["direction"] else c["status"]
     print(f"{c['id']}: {moved}" + (f"; blocked: {c['blocked']}" if c.get("blocked") else "")
           + (f"; deps: {' '.join(c['deps']) or 'none'}" if a.deps is not None else ""))
+    if res["reason"].strip():
+        print(f"reason: {res['reason'].strip()}")
     if a.status is not None and transitions(policy) is None:
         print(f"note: {NO_RULES}")
     print(f"revision: {res['revision']}")
@@ -367,8 +384,9 @@ def main(argv=None) -> int:
     p.add_argument("--deps", nargs="*", metavar="ID", help="replaces the dependency list; no ID = no dependencies")
     p.add_argument("--evidence", action="append", metavar="KIND=PATH",
                    help="an existing evidence file, relative to the home repo root; repeatable")
-    p.add_argument("--reason", default="")
+    p.add_argument("--reason", default="", help="why; required for a rework rule; printed, not stored")
     p.add_argument("--expect", metavar="REVISION", help="refuse (exit 3) unless components.json is still this revision")
+    p.add_argument("--json", action="store_true", help="print the result as JSON (incl. direction and reason)")
     p.set_defaults(func=cmd_set)
     p = sub.add_parser("add")
     p.add_argument("id")

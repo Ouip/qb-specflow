@@ -11,9 +11,11 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -229,15 +231,23 @@ class TransitionTest(Product):
         self.assertIn("reason", out)
         self.assertEqual(self.reg.read_bytes(), before)
         res = R.set_component(self.product, "A1", status="Awaiting hardware", reason="end-to-end went red")
-        self.assertEqual((res["direction"], res["status_before"], res["component"]["status"]),
-                         ("rework", "Done", "Awaiting hardware"))
-        self.assertNotIn("evidence", res["component"])        # the evidence of the old status does not carry over
+        self.assertEqual((res["direction"], res["status_before"], res["component"]["status"], res["reason"]),
+                         ("rework", "Done", "Awaiting hardware", "end-to-end went red"))
+        self.assertEqual([e["kind"] for e in res["component"]["evidence"]], ["e2e", "manual"])   # kept, never dropped
         rc, out = self.cli("set", "A1", "--status", "Done", "--evidence", "e2e=evidence/A1/e2e.txt",
                            "--evidence", "manual=evidence/A1/manual.md")
         self.assertEqual(rc, 0, out)
         rc, out = self.cli("set", "A1", "--status", "Awaiting hardware", "--reason", "red again")
         self.assertEqual(rc, 0, out)
         self.assertIn("rework", out)
+        self.assertIn("reason: red again", out)
+        rc, out = self.cli("set", "A1", "--status", "Done", "--evidence", "e2e=evidence/A1/e2e.txt",
+                           "--evidence", "manual=evidence/A1/manual.md")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.cli("set", "A1", "--status", "Awaiting hardware", "--reason", "red a third time", "--json")
+        self.assertEqual(rc, 0, out)
+        got = json.loads(out)
+        self.assertEqual((got["direction"], got["reason"], got["status_before"]), ("rework", "red a third time", "Done"))
 
     def test_same_status_is_not_a_transition(self):
         self.save([comp("A1")])
@@ -297,6 +307,119 @@ class RuleStateTest(Product):
         self.assertIn("Shipped", out)
         self.assertEqual(self.reg.read_bytes(), before)
         self.assertEqual(self.cli("set", "A1", "--block", "fix the rules first")[0], 0)   # rules apply to status only
+
+    def test_rule_repo_missing_from_components_repos(self):
+        """A rule limited to a repo id components.json does not have never applies; a weaker general rule would be used
+        instead. check fails and status changes are refused."""
+        pol = policy([dict(r, repos=["web"]) if r.get("repos") else r for r in RULES])
+        pol["repos"]["web"] = {"integration_branch": "main"}
+        self.set_policy(pol)
+        self.save([comp("A1", "Awaiting hardware")])
+        rc, out = self.cli("check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("web", out)
+        self.ev("evidence/manual.md")
+        before = self.reg.read_bytes()
+        rc, out = self.cli("set", "A1", "--status", "Done", "--evidence", "manual=evidence/manual.md")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("web", out)
+        self.assertEqual(self.reg.read_bytes(), before)
+
+    def test_rework_rule_must_move_back(self):
+        """A rework rule needs no evidence, so one that moves forward in states.order would be an evidence-free jump."""
+        self.set_policy(policy(RULES + [{"from": "Not started", "to": "Done", "rework": True}]))
+        self.save([comp("A1")])
+        rc, out = self.cli("check")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Not started -> Done", out)
+        before = self.reg.read_bytes()
+        rc, out = self.cli("set", "A1", "--status", "Done", "--reason", "skip ahead")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.reg.read_bytes(), before)
+
+
+class EvidenceAccumulatesTest(Product):
+    def test_evidence_only_set_never_removes_refs(self):
+        self.save([comp("A1", "Awaiting hardware")])
+        self.ev("evidence/A1/e2e.txt")
+        self.ev("evidence/A1/manual.md")
+        self.ev("evidence/A1/note.txt")
+        rc, out = self.cli("set", "A1", "--status", "Done", "--evidence", "e2e=evidence/A1/e2e.txt",
+                           "--evidence", "manual=evidence/A1/manual.md")
+        self.assertEqual(rc, 0, out)
+        proof = self.row("A1")["evidence"]
+        rc, out = self.cli("set", "A1", "--evidence", "note=evidence/A1/note.txt")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.row("A1")["evidence"][:2], proof)                   # the acceptance proof stays
+        self.assertEqual(self.row("A1")["evidence"][2]["kind"], "note")
+        self.assertEqual(self.cli("set", "A1", "--evidence", "note=evidence/A1/note.txt")[0], 0)
+        self.assertEqual(len(self.row("A1")["evidence"]), 3)                      # an identical ref is not repeated
+
+    def test_forward_step_keeps_earlier_refs_but_needs_its_own(self):
+        self.save([comp("A1")])
+        for k in ("dispatch", "g4", "g5", "merge"):
+            self.ev(f"evidence/A1/{k}.txt")
+        self.assertEqual(self.cli("set", "A1", "--status", "In progress",
+                                  "--evidence", "dispatch=evidence/A1/dispatch.txt")[0], 0)
+        self.assertEqual(self.cli("set", "A1", "--evidence", "g4=evidence/A1/g4.txt")[0], 0)
+        rc, out = self.cli("set", "A1", "--status", "Awaiting integration",       # g4 on the row does not count
+                           "--evidence", "g5=evidence/A1/g5.txt", "--evidence", "merge=evidence/A1/merge.txt")
+        self.assertEqual(rc, 4, out)
+        self.assertIn("g4", out)
+        rc, out = self.cli("set", "A1", "--status", "Awaiting integration", "--evidence", "g4=evidence/A1/g4.txt",
+                           "--evidence", "g5=evidence/A1/g5.txt", "--evidence", "merge=evidence/A1/merge.txt")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([e["kind"] for e in self.row("A1")["evidence"]], ["dispatch", "g4", "g5", "merge"])
+
+
+class SiblingLoadTest(unittest.TestCase):
+    """One state_io per process for every core module that loads it; a same-named module from another path (another
+    plugin version) is never reused; a failed load leaves no half module behind."""
+    LOADERS = ("registry.py", "process_runner.py")
+
+    def test_one_state_io_per_process(self):
+        load = ("import importlib.util, sys\n"
+                "def load(name, path):\n"
+                "    spec = importlib.util.spec_from_file_location(name, path)\n"
+                "    m = importlib.util.module_from_spec(spec)\n"
+                "    sys.modules[name] = m\n"
+                "    spec.loader.exec_module(m)\n"
+                "    return m\n")
+        for a, b in (self.LOADERS, self.LOADERS[::-1]):
+            code = load + (f"A = load('probe_a', {str(SCRIPTS / a)!r})\n"
+                           f"B = load('probe_b', {str(SCRIPTS / b)!r})\n"
+                           "print(A.state_io is B.state_io, A.state_io.KEEP is B.state_io.KEEP)\n")
+            with self.subTest(order=(a, b)):
+                r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+                self.assertEqual(r.stdout.split(), ["True", "True"], r.stderr)
+
+    def test_same_name_from_another_path_is_not_reused(self):
+        for script in self.LOADERS:
+            with self.subTest(script), tempfile.TemporaryDirectory() as d:
+                fake = types.ModuleType("specflow_state_io")
+                fake.__file__ = str(Path(d) / "state_io.py")
+                with mock.patch.dict(sys.modules, {"specflow_state_io": fake}):
+                    spec = importlib.util.spec_from_file_location("specflow_probe", SCRIPTS / script)
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    self.assertIsNot(mod.state_io, fake)
+                    self.assertEqual(Path(mod.state_io.__file__).resolve(), (SCRIPTS / "state_io.py").resolve())
+                    self.assertIs(sys.modules["specflow_state_io"], mod.state_io)
+
+    def test_failed_load_leaves_no_broken_module(self):
+        for script in self.LOADERS:
+            for had_one in (True, False):
+                with self.subTest(script=script, had_one=had_one), tempfile.TemporaryDirectory() as d, \
+                        mock.patch.dict(sys.modules):
+                    shutil.copy(SCRIPTS / script, d)
+                    (Path(d) / "state_io.py").write_text("raise RuntimeError('broken sibling')\n", encoding="utf-8")
+                    if not had_one:
+                        sys.modules.pop("specflow_state_io", None)
+                    before = sys.modules.get("specflow_state_io")
+                    spec = importlib.util.spec_from_file_location("specflow_probe", Path(d) / script)
+                    with self.assertRaises(RuntimeError):
+                        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+                    self.assertIs(sys.modules.get("specflow_state_io"), before)
 
 
 class HumanKindTest(Product):

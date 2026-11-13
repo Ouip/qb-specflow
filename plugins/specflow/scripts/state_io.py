@@ -302,7 +302,7 @@ class RegistryChange:
     component_id: str
     target_status: str | None = None   # new status; must be in states.order
     blocked: object = KEEP             # KEEP = unchanged; None = unblock; str = the reason (who must do what)
-    evidence_refs: tuple | None = None  # replaces the component's evidence; each {"kind"?, "path": repo-relative, "sha256"}, written first
+    evidence_refs: tuple | None = None  # added to the component's evidence (never removed); each {"kind"?, "path": repo-relative, "sha256"}, written first
     reason: str = ""                   # why; returned with the result; required for a rework transition
     deps: tuple | None = None          # replaces the dependency list
     new: dict | None = None            # add a component: {"name", "spec", "repo"}; status starts at states.order[0]
@@ -346,6 +346,27 @@ def find_transition(transitions, status_from: str, status_to: str, repo) -> dict
     step = [r for r in transitions if r["from"] == status_from and r["to"] == status_to]
     return next((r for r in step if repo in (r.get("repos") or ())), None) or \
         next((r for r in step if not r.get("repos")), None)
+
+
+def rule_problems(transitions, data: dict) -> list[str]:
+    """What makes the rules unusable with this components.json (empty = usable): a status not in states.order; a repo id
+    not in its repos (a rule limited to it would never apply and a weaker general rule would be used instead); a rework
+    rule that does not move back in states.order (rework needs no evidence, so it must never be a way forward)."""
+    st = data.get("states") if isinstance(data.get("states"), dict) else {}
+    order = st.get("order") if isinstance(st.get("order"), list) else []
+    repos = data.get("repos") if isinstance(data.get("repos"), dict) else {}
+    out = []
+    unknown = sorted({r[k] for r in transitions for k in ("from", "to")} - set(order))
+    if unknown:
+        out.append(f"transitions in workflow.json name statuses not in states.order: {', '.join(unknown)}")
+    lost = sorted({x for r in transitions for x in r.get("repos") or ()} - set(repos))
+    if lost:
+        out.append(f"transitions in workflow.json name repos not in the repos of components.json: {', '.join(lost)} "
+                   "(a rule limited to them would never apply)")
+    for r in transitions:
+        if r.get("rework") and r["from"] in order and r["to"] in order and order.index(r["to"]) >= order.index(r["from"]):
+            out.append(f"rework rule {r['from']} -> {r['to']} does not move back in states.order")
+    return out
 
 
 def next_statuses(transitions, status_from: str, repo) -> list[str]:
@@ -423,10 +444,9 @@ def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root, transitions=Non
             err.append(f"status must be one of: {' '.join(order)}")
         elif transitions is not None and ch.target_status != cur:
             # decided here, under the lock, on the row as it is now: a decision made on an earlier read could be stale
-            unknown = sorted({r[k] for r in transitions for k in ("from", "to")} - set(order))
-            if unknown:
-                raise StateError(f"transitions in workflow.json name statuses that are not in states.order: "
-                                 f"{', '.join(unknown)}; fix the rules (or states.order) before changing any status")
+            bad = rule_problems(transitions, data)
+            if bad:
+                raise StateError("; ".join(bad) + "; fix the rules (or components.json) before changing any status")
             rule = find_transition(transitions, cur, ch.target_status, row.get("repo"))
             if rule is None:
                 can = next_statuses(transitions, cur, row.get("repo"))
@@ -459,8 +479,9 @@ def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root, transitions=Non
                 err.append("dependencies would form a cycle: " + " -> ".join(loop))
     if err:
         raise ChangeRejected("; ".join(err))
-    # A rule-governed status change replaces the evidence with this change's refs (none = no evidence): the evidence
-    # on a row is the proof of how it reached its current status, never left over from an earlier one.
+    # Evidence only accumulates: the given refs are appended (an identical kind + path + sha256 is not repeated) and no
+    # change ever removes a ref, so the proof behind a status cannot be dropped. A rule's needs count only the refs
+    # given in this same change, never refs already on the row.
     if ch.evidence_refs is not None or rule is not None:
         refs = list(ch.evidence_refs or ())
         base = Path(root) if root else (_toplevel(spec_dir) if refs else None)
@@ -474,11 +495,13 @@ def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root, transitions=Non
                 raise EvidenceMissing(f"{rule['from']} -> {rule['to']} needs evidence of kind: {', '.join(lack)} "
                                       f"(given: {', '.join(sorted(k for k in have if k)) or 'none'}); "
                                       "write it first, then reference it")
-        if refs:
-            row["evidence"] = [{**({"kind": r["kind"]} if "kind" in r else {}), "path": r["path"], "sha256": r["sha256"]}
-                               for r in refs]
-        else:
-            row.pop("evidence", None)
+        kept = list(row.get("evidence") or [])
+        for r in refs:
+            entry = {**({"kind": r["kind"]} if "kind" in r else {}), "path": r["path"], "sha256": r["sha256"]}
+            if entry not in kept:
+                kept.append(entry)
+        if kept:
+            row["evidence"] = kept
     direction = None if rule is None else ("rework" if rule.get("rework") else "forward")
     return row, {"status_before": before, "direction": direction}
 
@@ -490,9 +513,11 @@ def update_registry(path: Path, expected_revision: str | None, change: RegistryC
     transitions: the validated `transitions` of workflow.json, or None = no rules (any status in states.order is
     accepted, as before). With rules, a status change must match the one rule for (current status, target, the row's
     repo) - see find_transition; a rework rule needs change.reason; every kind in the rule's `needs` must be among the
-    change's evidence_refs (each existing, sha256 matching); the row's evidence becomes exactly those refs. All of this is
-    decided under the lock on the row as it is now, so a decision cannot rest on a stale read, with or without a revision.
-    A rule naming a status not in states.order refuses every status change (StateError, 2).
+    change's evidence_refs (each existing, sha256 matching); refs already on the row do not count. Evidence refs are
+    always appended to the row's evidence (identical ones not repeated) and never removed. All of this is decided under
+    the lock on the row as it is now, so a decision cannot rest on a stale read, with or without a revision.
+    Rules that do not fit this components.json (rule_problems: unknown status or repo id, a rework rule that does not
+    move back) refuse every status change (StateError, 2).
 
     expected_revision is the sha256 of the file bytes the caller read (file_revision), not a counter: the authority file
     gets no counter field, so two machines editing different components do not collide on a counter line.
