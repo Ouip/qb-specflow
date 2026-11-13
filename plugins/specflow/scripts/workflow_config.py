@@ -17,7 +17,8 @@ workflow.json; its default path is the git top level of the product folder) and 
 
 Exit codes: 0 pass, 2 input / schema, 3 version or dirty conflict (lock mismatch, generated file differs), 4 missing file,
 5 capability missing, 6 timeout, 1 unexpected error.
-Component status / dependencies / blocked live only in components.json; they are never stored here.
+Component status / dependencies / blocked live only in components.json; they are never stored here. The rules for
+changing a status (optional `transitions`, `evidence_kinds`) are policy and live here; registry.py applies them.
 """
 from __future__ import annotations
 
@@ -86,6 +87,71 @@ def policy_resources(policy: dict) -> tuple[str, ...]:
     return tuple(policy.get("resources") or ())
 
 
+RULE_KEYS = ("from", "to", "needs", "repos", "rework")
+
+
+def _is_kind(k) -> bool:
+    """An evidence kind name: non-empty, no whitespace, no '=' (the CLI writes evidence as KIND=PATH)."""
+    return isinstance(k, str) and bool(re.fullmatch(r"[^=\s]+", k))
+
+
+def _transition_problems(rules, repos: dict) -> list[str]:
+    """`transitions`: status-change rules (policy, not state). Each rule {"from", "to", "needs"?: [kind...],
+    "repos"?: [repo id...], "rework"?: bool}. For one from -> to step a component gets at most one rule: the one listing
+    its repo, else the one without repos. Whether the state names exist is checked against components.json (registry.py)."""
+    if not isinstance(rules, list) or not rules:
+        return ["transitions must be a non-empty array of rules (leave it out for no rules)"]
+    e: list[str] = []
+    scopes: dict[tuple, list] = {}  # (from, to) -> repo scopes seen; None = every repo
+    for i, r in enumerate(rules):
+        at = f"transitions[{i}]"
+        if not isinstance(r, dict):
+            e.append(f"{at} must be an object")
+            continue
+        extra = sorted(set(r) - set(RULE_KEYS))
+        if extra:
+            e.append(f"{at}: unknown field {', '.join(extra)} (allowed: {', '.join(RULE_KEYS)})")
+        ends = [r.get(k) for k in ("from", "to")]
+        if not all(isinstance(s, str) and s.strip() for s in ends):
+            e.append(f"{at}: from and to must be non-empty status names")
+            continue
+        if ends[0] == ends[1]:
+            e.append(f"{at}: from and to are the same status")
+        needs = r.get("needs", [])
+        if not (isinstance(needs, list) and all(_is_kind(k) for k in needs)) or len(set(needs)) != len(needs):
+            e.append(f"{at}.needs must be an array of distinct evidence kinds (no spaces, no '=')")
+        scope = None
+        if "repos" in r:
+            rr = r["repos"]
+            if not _is_str_list(rr) or not rr or len(set(rr)) != len(rr):
+                e.append(f"{at}.repos must be a non-empty array of distinct repo ids")
+            else:
+                e += [f"{at}.repos: \"{x}\" is not in repos" for x in rr if x not in repos]
+                scope = set(rr)
+        if "rework" in r and not isinstance(r["rework"], bool):
+            e.append(f"{at}.rework must be true or false")
+        for prev in scopes.setdefault(tuple(ends), []):
+            if (prev is None and scope is None) or (prev and scope and prev & scope):
+                e.append(f"{at}: a second rule for {ends[0]} -> {ends[1]} with the same repos: "
+                         "a component must get exactly one rule for a step")
+                break
+        scopes[tuple(ends)].append(scope)
+    return e
+
+
+def _evidence_kind_problems(kinds) -> list[str]:
+    """`evidence_kinds`: {kind: {"human": bool}}. A human kind is written by a person; no core command writes it."""
+    if not isinstance(kinds, dict):
+        return ["evidence_kinds must be an object {kind: {\"human\": true|false}}"]
+    e: list[str] = []
+    for k, v in kinds.items():
+        if not _is_kind(k):
+            e.append(f"evidence_kinds: \"{k}\" is not a kind name (no spaces, no '=')")
+        elif not isinstance(v, dict) or set(v) - {"human"} or not isinstance(v.get("human", False), bool):
+            e.append(f"evidence_kinds.{k} must be an object with only \"human\": true|false")
+    return e
+
+
 def validate_policy(d: dict) -> list[str]:
     """Return every problem (does not stop at the first); an empty list means valid."""
     e: list[str] = []
@@ -95,7 +161,8 @@ def validate_policy(d: dict) -> list[str]:
         if k in d:
             e.append(f"top-level field \"{k}\" is not allowed: component state lives only in components.json")
     # Required: repos, tools, capabilities, dispatch.timeout_seconds. Optional but validated when present: entry,
-    # test_profiles, roles, resources, repos.*.remote_alias (default "origin"), dispatch.session_timeout_seconds.
+    # test_profiles, roles, resources, repos.*.remote_alias (default "origin"), dispatch.session_timeout_seconds,
+    # transitions, evidence_kinds.
     for k in ("repos", "tools", "capabilities", "dispatch"):
         if not isinstance(d.get(k), dict) or not d.get(k):
             e.append(f"{k} is missing (must be a non-empty object)")
@@ -160,6 +227,10 @@ def validate_policy(d: dict) -> list[str]:
     for c in disp.get("requires_capabilities", []):
         if c not in caps:
             e.append(f"dispatch.requires_capabilities: \"{c}\" is not in capabilities")
+    if "transitions" in d:
+        e += _transition_problems(d["transitions"], repos if isinstance(repos, dict) else {})
+    if "evidence_kinds" in d:
+        e += _evidence_kind_problems(d["evidence_kinds"])
     return e
 
 

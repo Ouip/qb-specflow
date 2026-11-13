@@ -13,8 +13,11 @@ Boundaries:
 - claims (tasks and named local resources): an OS-held lock plus owner metadata (machine, pid, start time, worktree,
   run id). A claim is held until the owner process tree is confirmed stopped; age never matters; records from another
   machine are not imported and their PIDs are not trusted.
-- evidence: write immutable evidence first (write_evidence), then reference it with update_registry; a reference that
-  cannot be resolved or whose hash differs is refused. There is no transaction across several files.
+- evidence: write immutable evidence first (write_evidence) or take an existing file (reference_evidence), then
+  reference it with update_registry; a reference that cannot be resolved or whose hash differs is refused. A reference
+  may carry a "kind". There is no transaction across several files.
+- status rules: update_registry(transitions=...) checks a status change against the policy's rules (find_transition)
+  under the same lock, on the row as it is then.
 
 `expected_revision=None` means "the caller holds no revision" and is the same idea everywhere, but what a function can do
 with that depends on whether the file must already exist:
@@ -299,8 +302,8 @@ class RegistryChange:
     component_id: str
     target_status: str | None = None   # new status; must be in states.order
     blocked: object = KEEP             # KEEP = unchanged; None = unblock; str = the reason (who must do what)
-    evidence_refs: tuple | None = None  # replaces the component's evidence; each {"path": repo-relative, "sha256"}, written first
-    reason: str = ""                   # why; returned with the result
+    evidence_refs: tuple | None = None  # replaces the component's evidence; each {"kind"?, "path": repo-relative, "sha256"}, written first
+    reason: str = ""                   # why; returned with the result; required for a rework transition
     deps: tuple | None = None          # replaces the dependency list
     new: dict | None = None            # add a component: {"name", "spec", "repo"}; status starts at states.order[0]
 
@@ -337,6 +340,23 @@ def find_cycle(comps):
     return None
 
 
+def find_transition(transitions, status_from: str, status_to: str, repo) -> dict | None:
+    """The one rule (workflow.json `transitions`) that governs status_from -> status_to for a component in `repo`: a rule
+    listing the repo wins over a rule without repos; a rule listing other repos never applies. None = no rule."""
+    step = [r for r in transitions if r["from"] == status_from and r["to"] == status_to]
+    return next((r for r in step if repo in (r.get("repos") or ())), None) or \
+        next((r for r in step if not r.get("repos")), None)
+
+
+def next_statuses(transitions, status_from: str, repo) -> list[str]:
+    """Statuses a component in `repo` may move to from status_from under the rules (rule order)."""
+    out = []
+    for r in transitions:
+        if r["from"] == status_from and r["to"] not in out and find_transition(transitions, status_from, r["to"], repo):
+            out.append(r["to"])
+    return out
+
+
 def _update_json(path: Path, expected_revision, mutate, runtime, timeout) -> dict:
     """Full read-modify-write of components.json: lock -> sweep stale temps -> read -> CAS -> mutate -> atomic write."""
     path = Path(path)
@@ -361,7 +381,8 @@ def _update_json(path: Path, expected_revision, mutate, runtime, timeout) -> dic
     return {"revision": _sha256(out), "previous_revision": rev, "changed": out != raw, **result}
 
 
-def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root) -> dict:
+def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root, transitions=None) -> tuple[dict, dict]:
+    """Validate and apply one change to the data read under the lock. Returns (row, {"status_before", "direction"})."""
     comps = data.get("components")
     order = (data.get("states") or {}).get("order") or []
     if not isinstance(comps, list) or not order:
@@ -387,17 +408,36 @@ def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root) -> dict:
         row = {"id": cid, "name": vals["name"].strip(), "spec": vals["spec"].strip(), "repo": vals["repo"],
                "deps": [], "status": order[0], "blocked": None}
         comps.append(row)
+        before = None
     else:
         row = next((c for c in comps if c.get("id") == cid), None)
         if row is None:
             raise ChangeRejected(f"no component {cid}")
         if ch.target_status is None and ch.blocked is KEEP and ch.deps is None and ch.evidence_refs is None:
             raise ChangeRejected("nothing to change: give at least one of status, blocked, deps, evidence")
+        before = row.get("status")
+    rule = None  # the transition rule of this status change (only with rules, only when the status really changes)
     if ch.target_status is not None:
-        if ch.target_status in order:
-            row["status"] = ch.target_status
-        else:
+        cur = row.get("status")
+        if ch.target_status not in order:
             err.append(f"status must be one of: {' '.join(order)}")
+        elif transitions is not None and ch.target_status != cur:
+            # decided here, under the lock, on the row as it is now: a decision made on an earlier read could be stale
+            unknown = sorted({r[k] for r in transitions for k in ("from", "to")} - set(order))
+            if unknown:
+                raise StateError(f"transitions in workflow.json name statuses that are not in states.order: "
+                                 f"{', '.join(unknown)}; fix the rules (or states.order) before changing any status")
+            rule = find_transition(transitions, cur, ch.target_status, row.get("repo"))
+            if rule is None:
+                can = next_statuses(transitions, cur, row.get("repo"))
+                err.append(f"no transition rule from {cur!r} to {ch.target_status!r} for {cid} (repo {row.get('repo')}); "
+                           f"allowed from {cur!r}: {', '.join(can) or 'nothing'}")
+            elif rule.get("rework") and not (ch.reason or "").strip():
+                err.append(f"{cur} -> {ch.target_status} is rework: give a reason")
+            else:
+                row["status"] = ch.target_status
+        else:
+            row["status"] = ch.target_status
     if ch.blocked is not KEEP:
         if ch.blocked is None:
             row["blocked"] = None
@@ -419,22 +459,40 @@ def _apply(data: dict, ch: RegistryChange, spec_dir: Path, root) -> dict:
                 err.append("dependencies would form a cycle: " + " -> ".join(loop))
     if err:
         raise ChangeRejected("; ".join(err))
-    if ch.evidence_refs is not None:
-        refs = list(ch.evidence_refs)
+    # A rule-governed status change replaces the evidence with this change's refs (none = no evidence): the evidence
+    # on a row is the proof of how it reached its current status, never left over from an earlier one.
+    if ch.evidence_refs is not None or rule is not None:
+        refs = list(ch.evidence_refs or ())
         base = Path(root) if root else (_toplevel(spec_dir) if refs else None)
         missing = [m for m in (check_evidence(base, r) for r in refs) if m]
         if missing:
             raise EvidenceMissing("write evidence first, then reference it: " + "; ".join(missing))
+        if rule is not None:
+            have = {r.get("kind") for r in refs}
+            lack = [k for k in rule.get("needs") or () if k not in have]
+            if lack:
+                raise EvidenceMissing(f"{rule['from']} -> {rule['to']} needs evidence of kind: {', '.join(lack)} "
+                                      f"(given: {', '.join(sorted(k for k in have if k)) or 'none'}); "
+                                      "write it first, then reference it")
         if refs:
-            row["evidence"] = [{"path": r["path"], "sha256": r["sha256"]} for r in refs]
+            row["evidence"] = [{**({"kind": r["kind"]} if "kind" in r else {}), "path": r["path"], "sha256": r["sha256"]}
+                               for r in refs]
         else:
             row.pop("evidence", None)
-    return row
+    direction = None if rule is None else ("rework" if rule.get("rework") else "forward")
+    return row, {"status_before": before, "direction": direction}
 
 
-def update_registry(path: Path, expected_revision: str | None, change: RegistryChange, *,
+def update_registry(path: Path, expected_revision: str | None, change: RegistryChange, *, transitions=None,
                     runtime: Path | None = None, root: Path | None = None, timeout: float = LOCK_TIMEOUT) -> dict:
     """The only write path for components.json (set / add commands go through here).
+
+    transitions: the validated `transitions` of workflow.json, or None = no rules (any status in states.order is
+    accepted, as before). With rules, a status change must match the one rule for (current status, target, the row's
+    repo) - see find_transition; a rework rule needs change.reason; every kind in the rule's `needs` must be among the
+    change's evidence_refs (each existing, sha256 matching); the row's evidence becomes exactly those refs. All of this is
+    decided under the lock on the row as it is now, so a decision cannot rest on a stale read, with or without a revision.
+    A rule naming a status not in states.order refuses every status change (StateError, 2).
 
     expected_revision is the sha256 of the file bytes the caller read (file_revision), not a counter: the authority file
     gets no counter field, so two machines editing different components do not collide on a counter line.
@@ -446,12 +504,15 @@ def update_registry(path: Path, expected_revision: str | None, change: RegistryC
     worktrees). The paths in evidence_refs are relative to `root` (default: top level of the repo holding path); each must
     exist and match its sha256, else EvidenceMissing and nothing is written. A failed validation raises ChangeRejected and
     the file is untouched.
-    Returns {"revision", "previous_revision", "changed", "component" (the row after the change), "reason"}.
+    Returns {"revision", "previous_revision", "changed", "component" (the row after the change), "reason",
+    "status_before" (None for a new component), "direction" ("forward" / "rework" when a rule governed a status change,
+    else None)}.
     """
     path = Path(path)
 
     def mutate(data):
-        return {"component": dict(_apply(data, change, path.parent, root)), "reason": change.reason}
+        row, info = _apply(data, change, path.parent, root, transitions)
+        return {"component": dict(row), "reason": change.reason, **info}
     return _update_json(path, expected_revision, mutate, runtime, timeout)
 
 
@@ -519,10 +580,20 @@ def write_evidence(root: Path, relpath: str, data: bytes) -> dict:
     return ref
 
 
+def reference_evidence(root: Path, relpath: str, kind: str | None = None) -> dict:
+    """Reference evidence that already exists (nothing is written): {"kind" (when given), "path", "sha256"} for
+    RegistryChange.evidence_refs. EvidenceMissing if the file is absent."""
+    got = file_revision(_evidence_path(root, relpath))
+    if got is None:
+        raise EvidenceMissing(f"evidence {relpath} does not exist: it is written first, then referenced")
+    return {**({"kind": kind} if kind is not None else {}), "path": PurePosixPath(relpath).as_posix(), "sha256": got}
+
+
 def check_evidence(root: Path, ref) -> str | None:
     """None if the evidence reference resolves and its sha256 matches; otherwise one sentence saying why."""
-    if not (isinstance(ref, dict) and isinstance(ref.get("path"), str) and isinstance(ref.get("sha256"), str)):
-        return f"bad reference format (need {{\"path\", \"sha256\"}}): {ref!r}"
+    if not (isinstance(ref, dict) and isinstance(ref.get("path"), str) and isinstance(ref.get("sha256"), str)
+            and ("kind" not in ref or (isinstance(ref["kind"], str) and ref["kind"].strip()))):
+        return f"bad reference format (need {{\"kind\"?, \"path\", \"sha256\"}}): {ref!r}"
     try:
         p = _evidence_path(root, ref["path"])
     except StateError as e:
