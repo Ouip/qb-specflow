@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff.manifest.schema.json",
+  "title": "Handoff manifest (handoff.manifest.json and handoffs/<handoff_id>.json, next to the handoff file in the home repo)",
+  "description": "Checklist of repo versions, required files and artifact locations for resuming on another machine. Never copies component status (components.json is the authority); never holds a URL with credentials; never records a path of this machine. sha256 is always of Git blob bytes. The home repo (\"home\": true in workflow.json) records its commit from before the handoff; its required_files are checked in the commit that carries this manifest. handoff.py validate_manifest implements the same rules plus cross-field checks: a repo_id must be in repos, the home repo must be there, no duplicates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "handoff_id", "created_at", "source_machine", "task_ids", "repos", "required_files", "artifacts", "pending_transfers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "handoff_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", "description": "Unique; the file name of the fixed manifest. Example: 20261113T1120-B-3f2a"},
+    "created_at": {"type": "string", "format": "date-time", "description": "ISO 8601 with a time zone"},
+    "source_machine": {"type": "string", "minLength": 1},
+    "task_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$"},
+                 "description": "The tasks selected at export (--task). verify checks only the references in the handoff file and in these tasks' notes (handoff.task_notes); other notes the handoff file links are only carried as required files. Not component status."},
+    "repos": {"type": "array", "items": {"$ref": "#/$defs/repo"}, "description": "Must include the home repo"},
+    "required_files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "pending_transfers": {"type": "array", "items": {"$ref": "#/$defs/pending"}, "description": "Not empty: the handoff cannot be published or resumable. Each entry is repo_id + relative_path (a file), artifact_id (an artifact), or only repo_id with reason unpushed (a whole commit not pushed: a commit is not a file, so there is no relative_path)."}
+  },
+  "$defs": {
+    "relpath": {"type": "string", "minLength": 1, "pattern": "^(?![A-Za-z]:)(?!/)(?!.*\\\\)(?!.*//)(?!.*/$)(?!(.*/)?\\.\\.?(/|$)).+$", "description": "A normalized path inside the repo: / separated, no . or .. segment, no empty segment, no trailing /, no drive letter, no backslash"},
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "repo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "remote_alias", "ref", "commit_sha"],
+      "properties": {
+        "repo_id": {"type": "string", "minLength": 1, "description": "A repo id from workflow.json; the path on each machine comes from its specflow.local.json"},
+        "remote_alias": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$", "description": "Remote name (e.g. origin), not a URL"},
+        "ref": {"type": "string", "minLength": 1, "description": "Remote branch name (may be a WIP task branch)"},
+        "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Full SHA; for the home repo, its commit from before the handoff"}
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_id", "relative_path", "sha256"],
+      "properties": {
+        "repo_id": {"type": "string", "minLength": 1},
+        "relative_path": {"$ref": "#/$defs/relpath"},
+        "sha256": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "uri", "sha256", "size_bytes", "required_for_resume"],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+        "uri": {"type": "string", "pattern": "^(?i:file|https?):", "description": "file:, http: or https:; no credentials"},
+        "sha256": {"$ref": "#/$defs/hex64"},
+        "size_bytes": {"type": "integer", "minimum": 0},
+        "required_for_resume": {"type": "boolean", "description": "false: unreadable or different only gives a warning"}
+      }
+    },
+    "pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "needed_for"],
+      "properties": {
+        "repo_id": {"type": "string", "minLength": 1},
+        "relative_path": {"$ref": "#/$defs/relpath"},
+        "artifact_id": {"type": "string", "minLength": 1},
+        "reason": {"enum": ["untracked", "uncommitted", "unpushed", "upload_failed"]},
+        "needed_for": {"type": "string", "minLength": 1, "description": "Task ids (comma separated); handoff when only the handoff file references it"}
+      },
+      "oneOf": [
+        {"required": ["artifact_id"], "not": {"anyOf": [{"required": ["repo_id"]}, {"required": ["relative_path"]}]}},
+        {"required": ["repo_id", "relative_path"], "not": {"required": ["artifact_id"]}},
+        {"required": ["repo_id"], "not": {"anyOf": [{"required": ["artifact_id"]}, {"required": ["relative_path"]}]},
+         "properties": {"reason": {"const": "unpushed"}}, "description": "No relative_path: a whole commit is not pushed"}
+      ]
+    }
+  }
+}
