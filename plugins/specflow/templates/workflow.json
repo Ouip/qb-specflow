@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "_comment": "Policy for the core scripts (workflow_config.py, registry.py, handoff.py, dispatch_run.py); replace every FILL value. Repo ids: short names without spaces or ':', the same here, in components.json and in specflow.local.json. The spec repo (the one holding specflow.md) has \"home\": true. Component status, deps and blocked live only in components.json. This machine's paths go in specflow.local.json at the spec repo root: never committed, and every worktree of the spec repo needs its own. spec_work is the capability handoff.py verify checks by default; keep it. handoff.file is relative to the spec repo root; local_only prefixes apply in every repo, so use only paths no repo tracks. Optional blocks, formats in each script's docstring: transitions and evidence_kinds (registry.py), dispatch.implementer and dispatch.report (dispatch_run.py), handoff.task_notes, resources, roles, test_profiles.",
+  "repos": {
+    "[FILL: spec repo id]": {"integration_branch": "[FILL]", "home": true},
+    "[FILL: code repo id]": {"integration_branch": "[FILL]"}
+  },
+  "tools": {
+    "git": {"version_args": ["--version"]}
+  },
+  "capabilities": {
+    "spec_work": {"tools": ["git"], "repos": []},
+    "dispatch": {"tools": ["git"], "repos": ["[FILL: code repo id]"]}
+  },
+  "dispatch": {"timeout_seconds": 3600, "requires_lock": true, "requires_capabilities": ["dispatch"]},
+  "handoff": {"file": "[FILL: the handoff file, relative to the spec repo root]", "task_notes": null, "local_only": []}
+}

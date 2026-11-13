@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "states": {
+    "order": ["Not started", "In progress", "Awaiting integration", "Awaiting hardware", "Done"],
+    "workable": ["Not started", "In progress"],
+    "dep_ok": ["Awaiting integration", "Awaiting hardware", "Done"]
+  },
+  "repos": {},
+  "components": []
+}
