@@ -1,6 +1,6 @@
 {
   "extraKnownMarketplaces": {
-    "specflow": { "source": { "source": "github", "repo": "Ouip/qb-specflow", "ref": "v0.0.3" } }
+    "specflow": { "source": { "source": "github", "repo": "Ouip/qb-specflow", "ref": "v0.1.0" } }
   },
   "enabledPlugins": { "specflow@specflow": true }
 }

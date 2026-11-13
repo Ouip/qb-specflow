@@ -34,8 +34,8 @@ Thirteen skills:
 | `accept` | Machine acceptance (G4) when the implementer reports done; the on-device stage |
 | `code-review-gate` | Code review (G5): check table plus style table |
 | `change` | A decision, requirement, hardware, contract or scenario changed |
-| `pickup` | Picking up work at the start of a session: syncs the repos, then lists the handoff's open items in plain words with one recommendation; an item's links are read once you pick it |
-| `wrapup` | Wrapping up a session: rewrites the handoff whole with the current state only (one line plus a link per open item, at most 5120 bytes) |
+| `pickup` | Picking up work at the start of a session: syncs the repos, then lists the handoff's open items in plain words with one recommendation; an item's links are read once you pick it. With a `handoff` block in `workflow.json` it also verifies the handoff and reports its level |
+| `wrapup` | Wrapping up a session: rewrites the handoff whole with the current state only (one line plus a link per open item, at most 5120 bytes). With a `handoff` block in `workflow.json` it also exports the handoff manifest and verifies that it is published |
 | `retro` | Looking back: what a gate let through, split into core or product |
 | `deep-review` | The five-stage review method (used inside G2 and G5): a spec → code track and a code → risk track, an evidence check against counter-evidence, a coverage audit; `scripts/review_report.py` checks the findings file |
 
@@ -51,12 +51,34 @@ Thirteen skills:
 2. Write the product repo's `.claude/settings.json` from `templates/settings.project.json` (`/specflow:init-product` generates it); `ref` pins a tag. Trust the folder when Claude Code asks.
 3. `claude plugin list` shows `specflow@specflow` as enabled.
 
-## 3. Set up a product
+## 3. Set up a product (a new project joins)
 
-1. `/specflow:init-product` creates `specflow.md`, the templates and `.claude/settings.json`; it never overwrites an existing file.
-2. Fill every `[FILL]` in `specflow.md`, including `Language` (the language for reports, the handoff file and replies).
-3. Write the product's gate items in the gate-extension file (`gates-ext.md`).
-4. Write the first spec with `/specflow:spec-write`.
+The spec repo is the git repo that holds the spec folder (the folder with `specflow.md`); the core scripts call it the home repo. Below, `<python>` is the `python:` header line of `specflow.md` and `<scripts>` is the installed plugin's `scripts` folder: `${CLAUDE_PLUGIN_ROOT}/scripts` inside a session, otherwise the `installPath` of `specflow@specflow` in `~/.claude/plugins/installed_plugins.json` plus `/scripts`.
+
+1. Install the plugin (section 2).
+2. In the spec repo, run `/specflow:init-product`. It creates `specflow.md`, `workflow.json`, `components.json`, the other templates, `.claude/settings.json`, and a `.gitignore` holding `specflow.local.json` when there is none (otherwise it prints that line for you to add). It never overwrites an existing file.
+3. Fill the settings:
+   - every `[FILL]` in `specflow.md`, including `Language` (the language for reports, the handoff file and replies);
+   - `workflow.json`: `repos` (the spec repo has `"home": true`; one entry per code repo), `handoff.file` (relative to the spec repo root), and the `tools` and `capabilities` the product needs. Keep `spec_work`: `handoff.py verify` checks it by default;
+   - `components.json`: `states` as in "Component states" of `specflow.md`, `repos` as the code repos. Once a component's spec exists, add it with `<python> <scripts>/registry.py --product <spec folder> add <id> --name <name> --spec <spec file> --repo <repo id>`;
+   - the product's gate items in `gates-ext.md`.
+
+   Use the same repo ids in `workflow.json`, `components.json` and `specflow.local.json`. Optional `workflow.json` blocks, formats in each script's docstring: `transitions` and `evidence_kinds` (status rules and the evidence each step needs; `registry.py`), `dispatch.implementer` and `dispatch.report` (an implementer tool run by `dispatch_run.py`, with a report schema in the spec folder), `handoff.task_notes`, `handoff.local_only`, `resources`, `roles`, `test_profiles`.
+4. This machine's paths: `<python> <scripts>/workflow_config.py --product <spec folder> regen` writes `specflow.local.example.json` at the spec repo root (commit it). Copy it to `specflow.local.json` next to it and set each repo's absolute path on this machine; `machine` is an optional label. `specflow.local.json` is never committed: each machine, and each worktree of the spec repo, has its own.
+5. Pin the plugin: `<python> <scripts>/workflow_config.py --product <spec folder> lock-write` writes `workflow.lock.json` (run it from the installed copy, not a clone). Commit it with `specflow.md`; `core:` must equal the lock's core version.
+6. Check: `workflow_config.py --product <spec folder> validate` and `doctor` return 0, and `doctor` prints no `[warning]`.
+7. First handoff: `/specflow:wrapup` exports, commits and pushes the handoff; it says "published" only when `verify --fetch` reports `published: true`. On another machine, with its own `specflow.local.json`, `/specflow:pickup` reports the level; only `resumable` means the work can resume there.
+8. Write the first spec with `/specflow:spec-write`.
+
+What the tools rely on:
+
+- `handoff.local_only` prefixes apply in every repo, and a reference under one counts as missing for another machine (it fails closed). List only paths that no repo tracks.
+- A reference that stays on this machine on purpose is directly followed by the mark `local only` or `僅本機` (section 6).
+- Handoff levels: the scripts' JSON says `local` (export), `published` or `resumable` (`verify --fetch`); the skills report them in the product's language (e.g. 繁體中文 本地保存／已發布／可接手). Only `published: true` from `verify --fetch` is "published"; only `resumable` is "can resume".
+- `components.json` changes only through `registry.py`. After a rework, the next forward step needs new evidence at a new path: the core checks that a file exists and that its sha256 matches, not that it is new. Evidence of a human kind (`"human": true`, e.g. manual acceptance) is written by a person and only referenced afterwards; no model writes or fills it in.
+- `dispatch_run.py`: trust `result.json` only together with the run's exit code. G4 runs in the worktree `result.json` names, against the run's start SHA. Nothing merges `run/<run id>` or removes its worktree automatically; a person does.
+
+Without `workflow.json`, every skill works as in 0.0.3. A product that does not want the tools leaves out `workflow.json` and `components.json`.
 
 ## 4. Tune
 
@@ -75,12 +97,13 @@ Thirteen skills:
    ```
    then `/reload-plugins` in a running session.
 4. Change `core:` in `specflow.md` to the new version, and apply any template changes the CHANGELOG lists.
+5. With a `workflow.lock.json`: run `workflow_config.py --product <spec folder> lock-write` again from the updated plugin and commit the lock with `specflow.md`; until then `dispatch-check` refuses (exit 3).
 
 At session start the SessionStart hook compares `core:` with the installed plugin version: a differing major version asks you to read the migration notes first; a newer plugin says "update available"; a plugin older than the pin says to update the plugin first.
 
 ## 6. Language
 
-Skills, gates and templates are in English. Skill descriptions also carry Traditional Chinese trigger phrases, so requests in either language find the right skill. The scripts accept both languages in specs and tables: `Verify` or `驗` columns, `[verify: …]` or `〔驗：…〕` markers, `untested:` or `不測：`, and `Side A`/`Side B` or `A 端`/`B 端`. Existing Chinese specs need no rewrite.
+Skills, gates and templates are in English. Skill descriptions also carry Traditional Chinese trigger phrases, so requests in either language find the right skill. The scripts accept both languages in specs and tables: `Verify` or `驗` columns, `[verify: …]` or `〔驗：…〕` markers, `untested:` or `不測：`, and `Side A`/`Side B` or `A 端`/`B 端`. Existing Chinese specs need no rewrite. In the handoff file and task notes, `handoff.py` accepts both marks `local only` and `僅本機`; a mark exempts only the reference it directly follows (blanks or one opening bracket in between, e.g. `` `build/r1/` (local only) ``).
 
 ## 7. Third-party dependencies and licenses
 
@@ -120,8 +143,13 @@ What stays as is: every skill's steps, the check-table format, the couplings col
 | `couplings.py … --values <value file> [--cpp <preprocessor>]` | the two sides' values per variant, units converted: `PASS`, `FAIL`, `UNVERIFIED`, `BLOCKED`, `MANUAL` | protocols, struct layouts, timing order, API meaning (listed as `MANUAL`); macros the text strategy cannot evaluate (`UNVERIFIED`) |
 | `review_report.py <findings.json> --root <dir>` | each finding's file, lines, quotes, commit and execution records are traceable | that any finding is a real bug |
 | `bench.py cases / repro / score` | benchmark size; ground truth reproduced with sanitizers; precision, recall, false-positive rate, evidence validity, coverage, stability of judged runs | any score without judged runs ([bench/README.md](plugins/specflow/bench/README.md)) |
+| `workflow_config.py --product <spec folder> validate / doctor / dispatch-check / lock-check / lock-write / regen / repo-path` | `workflow.json` and `workflow.lock.json` match their schema; each tool and capability declared vs measured on this machine; whether a dispatch may start (lock matches the installed plugins, required capabilities measured ok); writes the lock and `specflow.local.example.json` | that a tool it found works for the task; anything about another machine |
+| `registry.py --product <spec folder> show / check / set / add / repo / claims` | component states, what can be worked on next, the revision; structure, rule and evidence problems; refuses a status change without a rule or without the evidence the rule needs | that evidence is true or new: only that the file exists and its sha256 matches |
+| `handoff.py --product <spec folder> new-id / export / verify / report` | the handoff level (`local` from export; `published` or `resumable` from `verify --fetch`) and every missing, stale or pending item; refuses a handoff file over 5120 bytes or one with a suspected secret | that the handed-off work is right; anything not referenced from the handoff file or the selected task notes |
+| `dispatch_run.py --product <spec folder> check / run / cancel` | the gate result; one run's verdict from its own evidence (report against the schema, changed files against `--allow`/`--frozen`, the process tree stopped) in `result.json` and the exit code | that the code is right (G4 and G5 decide); ignored files and writes outside the worktree; it never merges a branch or removes a worktree |
+| `state_io.py`, `process_runner.py` (used by the scripts above; no command line) | locks, revisions and atomic writes under `<git common dir>/specflow-runtime/`; claims held until a process tree is confirmed stopped; timeout and cancel stop the whole tree | anything across machines (a local lock cannot stop another machine); a process started inside WSL that detaches itself |
 
-File formats are in each script's docstring. Nothing runs a command from a map or value file unless the command line says so (`--run`, `--mutate`, `--allow`, `--cpp`).
+File formats are in each script's docstring. Nothing runs a command from a map or value file unless the command line says so (`--run`, `--mutate`, `--allow`, `--cpp`). `doctor`, `dispatch-check` and `dispatch_run.py run` run the tools `workflow.json` names (version probes; the implementer). Exit codes of the workflow scripts: 0 pass, 1 refused or unexpected, 2 input or schema, 3 conflict or mismatch, 4 missing, 5 capability missing, 6 timeout.
 
 Tests: `python -m unittest discover -s plugins/specflow/tests`. Tests that need a C compiler or preprocessor are skipped without one; set `SPECFLOW_TEST_CPP` or `SPECFLOW_TEST_CC` to run them.
 

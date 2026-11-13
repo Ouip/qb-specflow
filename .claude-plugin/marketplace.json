@@ -12,7 +12,7 @@
     {
       "name": "specflow",
       "source": "./plugins/specflow",
-      "description": "Generic core: 13 skills, gate checklists, templates, check scripts, a version-check hook"
+      "description": "Generic core: 13 skills, gate checklists, templates, check scripts, workflow tools (policy, component registry, handoff check, dispatch runner), a version-check hook"
     }
   ]
 }

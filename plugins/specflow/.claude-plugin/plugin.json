@@ -1,6 +1,6 @@
 {
   "name": "specflow",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "description": "Core of a spec-driven firmware development workflow",
   "author": {
     "name": "quib"
