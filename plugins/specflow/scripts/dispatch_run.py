@@ -32,17 +32,22 @@ argv placeholders: {worktree} {run_dir} {report} (= run_dir/report.json) {schema
 is the tool's stdin. extra_allowed: flag -> true if it takes an existing file, false if it takes no value; a flag that the
 template already fixes is refused (2), as is anything not listed. done_requires: extra conditions a `done` report meets
 (empty: the field is [] / "" / null; in: the value is one of the list; equals: the value is exactly it).
+The report schema may use only what the judge checks: top level type "object", required, additionalProperties
+(true / false), properties; per property type (a name, or a list such as ["array", "null"]), enum, minimum, items
+(type only); pattern only on the task field (not read: the task is compared with the dispatch's units); annotations
+($schema, $id, $comment, title, description, default, examples) anywhere. Anything else is refused (2) at the start.
 
 Verdicts and exit codes (a tool exit 0 is only a process fact): done 0; tree_not_stopped 3 (the claim stays);
 timeout / cancelled 6; scope_violation 3; no_evidence 4 (no report, wrong task, broken JSON, fields do not match the
-schema, a `done` that breaks done_requires, tool exit code != 0, schema missing or changed); partial / blocked 4.
+schema, a `done` that breaks done_requires, tool exit code != 0, the judging itself failed); partial / blocked 4.
 Other: arguments 2, gate 3 / 5 / 6, claim held 3, worktree cannot be opened 3, program or machine cannot run it 5,
 missing base commit / policy / repo mapping 4.
 
 Evidence is only what this run left: run directory (manifest.json, prompt.md, result.schema.json, report.json, logs,
 process.json, checkpoint.json on timeout or cancel, result.json) and the worktree. An older report is never read. The
-report schema is read from the product folder, never from the run directory (the tool can write there): its sha256 is
-recorded in the manifest and checked again when judging.
+report schema is read from the product folder once, at the start, never from the run directory (the tool can write
+there): its sha256 is recorded in the manifest, and the judge uses the schema as read then (a change to the file during
+the run does not count).
 
 Limits (also written into every manifest): a git worktree is not an OS sandbox, the tool can still write outside it. The
 scope check only sees what git reports, in the worktree and on branch run/<run id> together (commits, tracked changes
@@ -215,21 +220,79 @@ def extra_args(allowed: dict, template: list[str], extra: list[str]) -> list[str
 # ---------- report and verdict ----------
 
 _JSON_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
+_TYPE_NAMES = (*_JSON_TYPES, "null")
+_ANNOTATIONS = {"$schema", "$id", "$comment", "title", "description", "default", "examples"}
+
+
+def _type_list(t):
+    """A schema "type" as a list of names (a name, or a non-empty list of names); None if it is neither."""
+    ts = [t] if isinstance(t, str) else t if isinstance(t, list) else None
+    return ts if ts and all(isinstance(x, str) and x in _TYPE_NAMES for x in ts) else None
+
+
+def _type_ok(v, t) -> bool:
+    if t == "null":
+        return v is None
+    return isinstance(v, _JSON_TYPES[t]) and not (t in ("integer", "number") and isinstance(v, bool))
+
+
+def schema_problems(schema: dict, task_field: str) -> list[str]:
+    """What the report schema uses beyond what check_report checks; a dispatch refuses it at the start (2) instead of
+    silently ignoring it. The subset: top level type "object", required, additionalProperties (true / false),
+    properties; per property type (a name or a list of names, "null" included), enum, minimum, items (type only);
+    pattern only on the task field (not read there: the task is compared with the dispatch's units); annotations
+    ($schema, $id, $comment, title, description, default, examples) anywhere."""
+    out = []
+
+    def keys(d, allowed, where):
+        out.extend(f"{where}: {k} is not supported" for k in d if k not in allowed and k not in _ANNOTATIONS)
+
+    keys(schema, {"type", "required", "additionalProperties", "properties"}, "top level")
+    if schema.get("type", "object") != "object":
+        out.append("top level: type must be \"object\"")
+    req = schema.get("required", [])
+    if not (isinstance(req, list) and all(isinstance(x, str) for x in req)):
+        out.append("required must be a list of field names")
+    if not isinstance(schema.get("additionalProperties", True), bool):
+        out.append("additionalProperties must be true or false")
+    props = schema.get("properties", {})
+    if not isinstance(props, dict):
+        return out + ["properties must be an object"]
+    for k, spec in props.items():
+        w = f"properties.{k}"
+        if not isinstance(spec, dict):
+            out.append(f"{w} must be an object")
+            continue
+        keys(spec, {"type", "enum", "minimum", "items"} | ({"pattern"} if k == task_field else set()), w)
+        if "type" in spec and _type_list(spec["type"]) is None:
+            out.append(f"{w}.type must be one of {', '.join(_TYPE_NAMES)} or a list of them")
+        if "enum" in spec and not isinstance(spec["enum"], list):
+            out.append(f"{w}.enum must be a list")
+        m = spec.get("minimum", 0)
+        if isinstance(m, bool) or not isinstance(m, (int, float)):
+            out.append(f"{w}.minimum must be a number")
+        it = spec.get("items", {})
+        if not isinstance(it, dict):
+            out.append(f"{w}.items must be an object")
+            continue
+        keys(it, {"type"}, f"{w}.items")
+        if "type" in it and _type_list(it["type"]) is None:
+            out.append(f"{w}.items.type must be one of {', '.join(_TYPE_NAMES)} or a list of them")
+    return out
 
 
 def _field_problems(k, v, spec):
-    t = spec.get("type")
-    py = _JSON_TYPES.get(t)
-    if py and (not isinstance(v, py) or (t in ("integer", "number") and isinstance(v, bool))):
-        return [f"report field {k} must be {t}"]
+    ts = _type_list(spec.get("type")) or []
+    if ts and not any(_type_ok(v, t) for t in ts):
+        return [f"report field {k} must be {' or '.join(ts)}"]
     out = []
     if "enum" in spec and v not in spec["enum"]:
         out.append(f"report field {k}: value {v!r} is not in {spec['enum']}")
     if "minimum" in spec and isinstance(v, (int, float)) and v < spec["minimum"]:
         out.append(f"report field {k} must not be below {spec['minimum']}")
-    it = _JSON_TYPES.get((spec.get("items") or {}).get("type"))
-    if t == "array" and it and any(not isinstance(x, it) for x in v):
-        out.append(f"every item of report field {k} must be {spec['items']['type']}")
+    its = _type_list((spec.get("items") or {}).get("type")) or []
+    if isinstance(v, list) and its and any(not any(_type_ok(x, t) for t in its) for x in v):
+        out.append(f"every item of report field {k} must be {' or '.join(its)}")
     return out
 
 
@@ -311,25 +374,18 @@ def _process_facts(res):
             "process_tree_stopped": res.process_tree_stopped}
 
 
-def read_schema(path: Path, expected_sha: str) -> tuple[dict | None, str | None]:
-    """The report schema from the product folder, only if it still is the bytes the run started with: (schema, None) or
-    (None, why). Never reads the run directory."""
-    try:
-        raw = Path(path).read_bytes()
-    except OSError as e:
-        return None, f"the report schema {Path(path).name} cannot be read ({e.__class__.__name__}): the report cannot be checked"
-    if hashlib.sha256(raw).hexdigest() != expected_sha:
-        return None, f"the report schema {Path(path).name} in the product folder changed during the run: the report cannot be checked"
-    try:
-        schema = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None, f"the report schema {Path(path).name} is not valid JSON"
-    return (schema, None) if isinstance(schema, dict) else (None, f"the report schema {Path(path).name} must be a JSON object")
+def _verdict(res, violations, problems, status):
+    """(exit code, verdict): process facts first, then scope, then evidence."""
+    return (3, "tree_not_stopped") if not res.process_tree_stopped else \
+        (6, "timeout") if res.timed_out else (6, "cancelled") if res.cancelled else \
+        (3, "scope_violation") if violations else (4, "no_evidence") if problems else \
+        (4, status) if status in ("partial", "blocked") else (0, "done")
 
 
-def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cfg, schema_path, schema_sha):
-    """Verdict of a dispatch run, from this run's directory and worktree only. cfg: the dispatch.report block;
-    schema_path / schema_sha: the product schema file and the hash recorded when the run started. Returns result.json's content."""
+def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cfg, schema):
+    """Verdict of a dispatch run, from this run's directory and worktree only. cfg: the dispatch.report block; schema:
+    the report schema as read from the product folder when the run started (never re-read: the run directory copy is
+    writable by the tool, and a change in the product folder during the run does not count). Returns result.json's content."""
     run_dir = Path(run_dir)
     branch = f"run/{run_dir.name}"
     changed, err = changed_files(wt, base_sha, branch)
@@ -340,19 +396,13 @@ def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cf
     head = head_problem(wt, branch)
     if head:
         violations.append(head)
-    schema, schema_err = read_schema(schema_path, schema_sha)
     path = run_dir / "report.json"
-    rep, problems = check_report(path, schema or {}, units, cfg)
-    if schema_err:
-        problems.insert(0, schema_err)
+    rep, problems = check_report(path, schema, units, cfg)
     if res.exit_code != 0 and not (res.timed_out or res.cancelled):
         problems.insert(0, f"the tool exit code is {res.exit_code}")
     problems += [f"changed outside the scope: {v}" for v in violations]
     status = rep.get(cfg["status_field"]) if rep else None
-    code, verdict = (3, "tree_not_stopped") if not res.process_tree_stopped else \
-        (6, "timeout") if res.timed_out else (6, "cancelled") if res.cancelled else \
-        (3, "scope_violation") if violations else (4, "no_evidence") if problems else \
-        (4, status) if status in ("partial", "blocked") else (0, "done")
+    code, verdict = _verdict(res, violations, problems, status)
     proc = json.loads((run_dir / process_runner.PROCESS).read_text(encoding="utf-8"))
     return {"schema_version": 1, "run_id": run_dir.name, "task_id": task_id, "finished_at": _now(),
             "exit_code": code, "verdict": verdict, "problems": problems, "process": _process_facts(res),
@@ -361,6 +411,20 @@ def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cf
                 "path": "report.json", "sha256": state_io.file_revision(path),
                 "task": rep.get(cfg["task_field"]) if rep else None, "status": status},
             "changed_files": changed, "scope_violations": violations, "worktree": str(wt)}
+
+
+def unjudged(res, run_dir, wt, task_id, err) -> dict:
+    """result.json of a run whose judging itself failed: never done (no_evidence 4 unless a process fact says more)."""
+    run_dir = Path(run_dir)
+    try:
+        left = json.loads((run_dir / process_runner.PROCESS).read_text(encoding="utf-8"))["leftover_pids"]
+    except Exception:  # noqa: BLE001
+        left = None
+    problems = [f"the run could not be judged ({type(err).__name__}: {err}): it does not count as done"]
+    code, verdict = _verdict(res, [], problems, None)
+    return {"schema_version": 1, "run_id": run_dir.name, "task_id": task_id, "finished_at": _now(),
+            "exit_code": code, "verdict": verdict, "problems": problems, "process": _process_facts(res),
+            "leftover_pids": left, "report": None, "changed_files": [], "scope_violations": [], "worktree": str(wt)}
 
 
 def _stop_note(res, run_dir) -> None:
@@ -480,10 +544,15 @@ def cmd_run(a) -> int:
     except OSError as e:
         raise _bad(f"report schema {schema_file} cannot be read: {e}", 4)
     try:
-        if not isinstance(json.loads(schema_bytes.decode("utf-8")), dict):
+        schema = json.loads(schema_bytes.decode("utf-8"))
+        if not isinstance(schema, dict):
             raise ValueError("the top level must be an object")
     except (UnicodeDecodeError, ValueError) as e:
         raise _bad(f"report schema {schema_file} is not a JSON object: {e}")
+    unsupported = schema_problems(schema, rcfg["task_field"])
+    if unsupported:
+        raise _bad(f"report schema {schema_file} uses what the judge does not check, so it is refused rather than "
+                   "silently ignored: " + "; ".join(unsupported))
     schema_sha = hashlib.sha256(schema_bytes).hexdigest()
     wt_root = repo.parent / "wt"
     values = {"model": role.get("model"), "effort": role.get("effort")}
@@ -533,7 +602,10 @@ def cmd_run(a) -> int:
         res = process_runner.run_process(argv, wt, timeout, run_dir, stdin_path=run_dir / "prompt.md",
                                          env=process_runner.child_env(run_dir),
                                          register=lambda pid: claim.add_process(pid, group=True))
-        result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, frozen, rcfg, schema_file, schema_sha)
+        try:
+            result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, frozen, rcfg, schema)
+        except Exception as e:  # noqa: BLE001 - a judge failure is a run without evidence, never one without result.json
+            result = unjudged(res, run_dir, wt, a.task, e)
         process_runner.write_once(run_dir / "result.json", result)
         print_result(result, run_dir)
         _stop_note(res, run_dir)

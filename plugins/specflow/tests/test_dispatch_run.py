@@ -150,9 +150,17 @@ elif mode == "tamper_run_schema":
     edit("src/a1/a.c")
     out.write_text(json.dumps({"task": "A1", "status": "done"}), encoding="utf-8")
 elif mode == "change_product_schema":
-    Path(os.environ["FAKE_PRODUCT_SCHEMA"]).write_text(json.dumps({"type": "object"}), encoding="utf-8")
+    # stricter now: the judge must still use the schema read at the start, so this valid report stays done
+    Path(os.environ["FAKE_PRODUCT_SCHEMA"]).write_text(json.dumps({"type": "object", "required": ["extra"]}),
+                                                       encoding="utf-8")
     edit("src/a1/a.c")
-    out.write_text(json.dumps({"task": "A1", "status": "done"}), encoding="utf-8")
+    report()
+elif mode == "nulls":
+    edit("src/a1/a.c")
+    report(notes=None, unmet=None)
+elif mode == "notes_int":
+    edit("src/a1/a.c")
+    report(notes=5)
 elif mode == "hang":
     grandchild(os.environ.get("FAKE_MARKER", ""))
     (log / "ready").write_text(str(os.getpid()))
@@ -649,12 +657,14 @@ class SchemaEvidenceTest(Base):
         self.assertEqual((rc, r["verdict"]), (4, "no_evidence"), out)
         self.assertTrue(any("tests" in p or "unmet" in p for p in r["problems"]), r["problems"])
 
-    def test_product_schema_changed_during_the_run_is_evidence_failure(self):
+    def test_product_schema_changed_during_the_run_does_not_count(self):
+        """The judge uses the schema read at the start (its sha256 is in the manifest), not a file read later."""
+        sha = hashlib.sha256((self.spec / "report.schema.json").read_bytes()).hexdigest()
         with mock.patch.dict(os.environ, {"FAKE_PRODUCT_SCHEMA": str(self.spec / "report.schema.json")}):
             rc, out = self.dispatch(mode="change_product_schema")
-        _, _, r = self.last()
-        self.assertEqual((rc, r["verdict"]), (4, "no_evidence"), out)
-        self.assertTrue(any("schema" in p for p in r["problems"]), r["problems"])
+        _, m, r = self.last()
+        self.assertEqual((rc, r["verdict"]), (0, "done"), out)
+        self.assertEqual(m["inputs"]["schema"]["sha256"], sha)
 
     def test_missing_product_schema_at_start_creates_nothing(self):
         (self.spec / "report.schema.json").unlink()
@@ -663,7 +673,7 @@ class SchemaEvidenceTest(Base):
         self.assertEqual(self.runs(), [])
         self.assertFalse((self.tmp / "wt").exists())
 
-    def test_schema_removed_before_judging_is_4_not_a_traceback(self):
+    def test_schema_removed_before_judging_does_not_count(self):
         real = R.run_process
 
         def fake(*a, **k):
@@ -673,8 +683,74 @@ class SchemaEvidenceTest(Base):
         with mock.patch.object(R, "run_process", fake):
             rc, out = self.dispatch()
         _, _, r = self.last()
-        self.assertEqual((rc, r["verdict"]), (4, "no_evidence"), out)
-        self.assertTrue(any("schema" in p for p in r["problems"]), r["problems"])
+        self.assertEqual((rc, r["verdict"]), (0, "done"), out)
+
+    def save_schema(self, schema):
+        (self.spec / "report.schema.json").write_text(json.dumps(schema), encoding="utf-8")
+
+    def test_type_list_with_null_is_judged(self):
+        """"type": ["array", "null"] used to crash the judge (exit 1, no result.json)."""
+        schema = json.loads(json.dumps(SCHEMA))
+        schema["properties"]["unmet"] = {"type": ["array", "null"], "items": {"type": ["string"]}}
+        schema["properties"]["notes"] = {"type": ["string", "null"]}
+        self.save_schema(schema)
+        for mode, code, verdict in (("ok", 0, "done"), ("nulls", 0, "done"), ("notes_int", 4, "no_evidence")):
+            with self.subTest(mode=mode):
+                rc, out = self.dispatch(mode=mode)
+                _, _, r = self.last()
+                self.assertEqual((rc, r["exit_code"], r["verdict"]), (code, code, verdict), out)
+        self.assertIn("report field notes must be string or null", r["problems"])
+
+    def test_schema_outside_the_checked_subset_is_2_and_creates_nothing(self):
+        props = SCHEMA["properties"]
+        bad = [
+            {**SCHEMA, "properties": {**props, "notes": {"type": "string", "maxLength": 5}}},
+            {**SCHEMA, "properties": {**props, "notes": {"type": "string", "pattern": "^x"}}},
+            {**SCHEMA, "properties": {**props, "notes": {"type": "date"}}},
+            {**SCHEMA, "properties": {**props, "notes": {"type": ["string", 5]}}},
+            {**SCHEMA, "properties": {**props, "notes": {"type": []}}},
+            {**SCHEMA, "properties": {**props, "unmet": {"type": "array", "items": {"type": "string", "minLength": 1}}}},
+            {**SCHEMA, "properties": {**props, "unmet": {"type": "array", "items": {"type": ["string", "nope"]}}}},
+            {**SCHEMA, "properties": {**props, "tests": {"type": "string", "enum": "pass"}}},
+            {**SCHEMA, "properties": {**props, "count": {"type": "integer", "minimum": "0"}}},
+            {**SCHEMA, "properties": {**props, "notes": {"type": "object", "properties": {}}}},
+            {**SCHEMA, "properties": {**props, "notes": "string"}},
+            {**SCHEMA, "properties": []},
+            {**SCHEMA, "required": "task"},
+            {**SCHEMA, "additionalProperties": {"type": "string"}},
+            {**SCHEMA, "type": "array"},
+            {**SCHEMA, "anyOf": [{"required": ["task"]}]},
+        ]
+        for schema in bad:
+            with self.subTest(schema=schema):
+                self.save_schema(schema)
+                rc, out = self.dispatch()
+                self.assertEqual(rc, 2, out)
+                self.assertIn("report schema", out)
+        self.assertEqual(self.runs(), [])
+        self.assertFalse((self.tmp / "wt").exists())
+        self.assertEqual(S.list_claims(self.runtime), [])
+        self.assertFalse((self.log / "args.json").exists())
+
+    def test_annotations_and_a_pattern_on_the_task_field_are_accepted(self):
+        props = SCHEMA["properties"]
+        self.save_schema({"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "t", "description": "d",
+                          **SCHEMA, "properties": {**props, "task": {"type": "string", "pattern": "^A[0-9]$",
+                                                                     "description": "the unit"},
+                                                   "unmet": {**props["unmet"], "items": {"type": "string",
+                                                                                         "description": "x"}}}})
+        rc, out = self.dispatch()
+        self.assertEqual(rc, 0, out)
+
+    def test_judge_failure_is_no_evidence_with_result_json(self):
+        with mock.patch.object(dr, "check_report", side_effect=RuntimeError("boom")):
+            rc, out = self.dispatch()
+        run, m, r = self.last()
+        self.assertEqual((rc, r["exit_code"], r["verdict"]), (4, 4, "no_evidence"), out)
+        self.assertTrue(any("RuntimeError" in p and "boom" in p for p in r["problems"]), r["problems"])
+        self.assertEqual((r["run_id"], r["task_id"]), (run.name, "A1"))
+        self.assertTrue(r["process"]["process_tree_stopped"])
+        self.assertEqual(S.list_claims(self.runtime), [])
 
     def test_schema_path_must_stay_in_the_product_folder(self):
         for bad in ("../x.json", "/abs/x.json", "a\\b.json"):
