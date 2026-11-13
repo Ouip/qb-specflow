@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""dispatch_run: run the pre-dispatch gate, then start an implementer tool in an isolated git worktree and judge the run
+from evidence only. Stdlib only.
+
+  python dispatch_run.py --product DIR check [--installed FILE]
+  python dispatch_run.py --product DIR run TASK --prompt-file P --allow GLOB... [--frozen GLOB...] [--base REF]
+                         [--repo R --unit U...] [--timeout S] [--dry-run] [--tool PATH] [--installed FILE]
+                         [-- EXTRA_ARGS...]
+  python dispatch_run.py --product DIR cancel RUN_ID
+
+--product is the product folder (holds specflow.md, workflow.json, components.json); it may also come after the
+subcommand. `check` runs only the gate. `run` does, in this order: read the policy and check the arguments (2), run the
+gate (lock mismatch 3, capability missing 5, probe timeout 6; nothing is created when it fails), find the program (5)
+and the base commit (4), take the claim resource dispatch:<TASK> (3 if held), open a worktree and a run directory, start
+the tool and judge. `cancel` asks a running run to stop (the runner kills the whole process tree and writes a checkpoint).
+
+TASK is a component id of components.json (its repo is the component's repo, the base is --base or comp/<name>, and the
+report's task must be TASK), or a fix dispatch: any other name ([A-Za-z0-9._-]) with --repo (a repo id of workflow.json),
+--base and --unit (the component ids the report's task may be). --allow / --frozen are repo-relative, / separated globs
+(* does not cross /, ** does); every changed file must match --allow and none --frozen. --tool replaces the program
+(argv[0]) of the template; extra arguments after -- are only accepted if dispatch.implementer.extra_allowed lists them.
+
+workflow.json, block "dispatch" (besides timeout_seconds, requires_lock, requires_capabilities):
+  "implementer": {"argv": ["<tool>", "--cd", "{worktree}", "-o", "{report}", "--schema", "{schema}", "-m", "{model}"],
+                  "extra_allowed": {"--ephemeral": false, "--image": true}}
+  "report": {"schema": "<report schema, relative to the product folder>", "task_field": "task", "status_field": "status",
+             "done_requires": [{"field": "unmet", "empty": true}, {"field": "tests", "in": ["pass", "na"]}]}
+argv placeholders: {worktree} {run_dir} {report} (= run_dir/report.json) {schema} (a copy in the run directory)
+{model} {effort} (from roles.implementer; if the template uses one and the role does not give it, exit 2). The prompt
+is the tool's stdin. extra_allowed: flag -> true if it takes an existing file, false if it takes no value; a flag that the
+template already fixes is refused (2), as is anything not listed. done_requires: extra conditions a `done` report meets
+(empty: the field is [] / "" / null; in: the value is one of the list; equals: the value is exactly it).
+
+Verdicts and exit codes (a tool exit 0 is only a process fact): done 0; tree_not_stopped 3 (the claim stays);
+timeout / cancelled 6; scope_violation 3; no_evidence 4 (no report, wrong task, broken JSON, fields do not match the
+schema, a `done` that breaks done_requires, tool exit code != 0, schema missing or changed); partial / blocked 4.
+Other: arguments 2, gate 3 / 5 / 6, claim held 3, worktree cannot be opened 3, program or machine cannot run it 5,
+missing base commit / policy / repo mapping 4.
+
+Evidence is only what this run left: run directory (manifest.json, prompt.md, result.schema.json, report.json, logs,
+process.json, checkpoint.json on timeout or cancel, result.json) and the worktree. An older report is never read. The
+report schema is read from the product folder, never from the run directory (the tool can write there): its sha256 is
+recorded in the manifest and checked again when judging.
+
+Limits (also written into every manifest): a git worktree is not an OS sandbox, the tool can still write outside it. The
+scope check only sees what git reports: tracked changes and untracked files that are not ignored; ignored files and
+writes outside the worktree are not seen. On Windows a process started inside WSL that detaches itself is not in the Job
+Object, so process_tree_stopped only speaks for the Windows side (see process_runner.py). Nothing here cleans up a
+worktree or merges a branch: a person reviews run/<run id> and merges it.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import json
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+def _load_sibling(name: str, module_name: str):
+    """Load a sibling script by file path under a unique module name (the scripts folder is not a package, and a product
+    adapter may itself be importable under the plain name; the core must never bind to that). One copy per process: a
+    module already loaded under module_name from this very file is reused; one from another path is not. A failed load
+    leaves sys.modules as it was."""
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    old = sys.modules.get(module_name)
+    try:
+        if old is not None and Path(old.__file__).resolve() == path:
+            return old
+    except (AttributeError, TypeError, OSError):
+        pass
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod  # registered before exec: dataclasses look the module up by name
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        if old is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = old
+        raise
+    return mod
+
+
+state_io = _load_sibling("state_io", "specflow_state_io")
+process_runner = _load_sibling("process_runner", "specflow_process_runner")
+workflow_config = _load_sibling("workflow_config", "specflow_workflow_config")
+registry = _load_sibling("registry", "specflow_registry")
+
+ConfigError = workflow_config.ConfigError
+TASK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+STATUSES = ("done", "partial", "blocked")
+ISOLATION = ("git worktree: its own working directory, index, build output, logs and temp; not an OS sandbox: the "
+             "implementer can still write outside the worktree; staying inside --allow is checked after the run from "
+             "the actual changes")
+LIMITS = [
+    "not an OS sandbox: the implementer can write anywhere its user can",
+    "the scope check sees only what git reports (tracked changes and untracked files that are not ignored); "
+    "ignored files and writes outside the worktree are not seen",
+    "on Windows a process started inside WSL that detaches itself is not in the Job Object; process_tree_stopped "
+    "only speaks for the Windows side",
+    "no automatic worktree cleanup and no automatic merge: a person reviews and merges the run/<run id> branch",
+]
+
+
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _bad(msg: str, code: int = 2):
+    return ConfigError(msg, code)
+
+
+# ---------- scope globs ----------
+
+def _glob_re(pat):
+    out, i = "", 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pat.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pat[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif pat[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(pat[i]), i + 1
+    return re.compile(out + r"\Z")
+
+
+def in_scope(path, patterns):
+    """Repo-relative path (/ separated) matches any glob (* does not cross /, ** does)."""
+    return any(_glob_re(p).match(path) for p in patterns)
+
+
+def _bad_glob(g):
+    return not g or "\\" in g or ":" in g or g.startswith("/") or ".." in g.split("/")
+
+
+# ---------- argv template ----------
+
+def _used(template: list[str]) -> set[str]:
+    return {m for a in template for m in re.findall(r"\{(\w+)\}", a)}
+
+
+def fill_template(template: list[str], values: dict) -> list[str]:
+    return [re.sub(r"\{(\w+)\}", lambda m: str(values[m.group(1)]), a) for a in template]
+
+
+def extra_args(allowed: dict, template: list[str], extra: list[str]) -> list[str]:
+    """Extra tool arguments checked against dispatch.implementer.extra_allowed; returns what to append, else ConfigError(2)."""
+    fixed = workflow_config.template_flags(template)
+    out, i = [], 0
+    while i < len(extra):
+        a = extra[i]
+        name, eq, val = a.partition("=") if a.startswith("--") else (a, "", "")
+        if name not in allowed:
+            is_fixed = name in fixed or (a.startswith("-") and not a.startswith("--") and a[:2] in fixed)
+            why = "is fixed by the argv template and cannot be overridden" if is_fixed else "is not allowed"
+            raise _bad(f"extra argument \"{a}\" {why} (allowed: {' '.join(allowed) or 'none'})")
+        if allowed[name]:
+            if not eq:
+                i += 1
+                val = extra[i] if i < len(extra) else ""
+            if not val or val.startswith("-") or not Path(val).is_file():
+                raise _bad(f"{name} needs an existing file: {val or '(none given)'}")
+            out += [name, val]
+        elif eq:
+            raise _bad(f"{name} takes no value: {a}")
+        else:
+            out.append(name)
+        i += 1
+    return out
+
+
+# ---------- report and verdict ----------
+
+_JSON_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list, "object": dict}
+
+
+def _field_problems(k, v, spec):
+    t = spec.get("type")
+    py = _JSON_TYPES.get(t)
+    if py and (not isinstance(v, py) or (t in ("integer", "number") and isinstance(v, bool))):
+        return [f"report field {k} must be {t}"]
+    out = []
+    if "enum" in spec and v not in spec["enum"]:
+        out.append(f"report field {k}: value {v!r} is not in {spec['enum']}")
+    if "minimum" in spec and isinstance(v, (int, float)) and v < spec["minimum"]:
+        out.append(f"report field {k} must not be below {spec['minimum']}")
+    it = _JSON_TYPES.get((spec.get("items") or {}).get("type"))
+    if t == "array" and it and any(not isinstance(x, it) for x in v):
+        out.append(f"every item of report field {k} must be {spec['items']['type']}")
+    return out
+
+
+def _is_empty(v) -> bool:
+    return v is None or (isinstance(v, (str, list, dict)) and len(v) == 0)
+
+
+def _require_problem(rep: dict, r: dict) -> str | None:
+    f = r["field"]
+    if f not in rep:
+        return f"status is done but the report has no field {f}"
+    v = rep[f]
+    if "empty" in r and not _is_empty(v):
+        return f"status is done but {f} is {v!r} (must be empty)"
+    if "in" in r and v not in r["in"]:
+        return f"status is done but {f} is {v!r} (allowed: {', '.join(map(repr, r['in']))})"
+    if "equals" in r and not (v == r["equals"] and type(v) is type(r["equals"])):
+        return f"status is done but {f} is {v!r} (must be {r['equals']!r})"
+    return None
+
+
+def check_report(path, schema: dict, units: list[str], cfg: dict):
+    """This run's report: (content or None, problems). Checks valid JSON, the schema's required / type / enum / minimum /
+    additionalProperties, the task field naming one of `units`, a known status, and for `done` every dispatch.report
+    done_requires rule. A schema pattern is not read: the task is compared with `units` directly."""
+    path = Path(path)
+    if not path.is_file():
+        return None, [f"no report file {path.name}: a tool exit code 0 does not mean it is done"]
+    try:
+        rep = json.loads(path.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        return None, [f"the report is not valid JSON ({e})"]
+    if not isinstance(rep, dict):
+        return None, ["the report must be a JSON object"]
+    props = schema.get("properties") or {}
+    probs = [f"the report lacks field {k}" for k in schema.get("required", []) if k not in rep]
+    if schema.get("additionalProperties") is False:
+        probs += [f"the report has field {k} that the schema does not have" for k in rep if k not in props]
+    for k, spec in props.items():
+        if k in rep:
+            probs += _field_problems(k, rep[k], spec)
+    tf, sf = cfg["task_field"], cfg["status_field"]
+    if rep.get(tf) not in units:
+        probs.append(f"the report's {tf} is {rep.get(tf)!r}; this dispatch is {' / '.join(units)}: not a report of this task")
+    status = rep.get(sf)
+    if status not in STATUSES:
+        probs.append(f"the report's {sf} is {status!r}; it must be one of {', '.join(STATUSES)}")
+    elif status == "done":
+        probs += [p for p in (_require_problem(rep, r) for r in cfg.get("done_requires", [])) if p]
+    return rep, probs
+
+
+def changed_files(wt, base_sha):
+    """What the worktree changed against the base (commits, uncommitted, untracked; not what git ignores): (list, error or None)."""
+    out = set()
+    for args in (["diff", "--name-only", "--no-renames", "-z", base_sha], ["ls-files", "--others", "--exclude-standard", "-z"]):
+        r = subprocess.run(["git", "-C", str(wt), *args], capture_output=True)
+        if r.returncode:
+            return sorted(out), r.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed"
+        out |= {x.decode("utf-8", "replace") for x in r.stdout.split(b"\0") if x}
+    return sorted(out), None
+
+
+def _process_facts(res):
+    return {"exit_code": res.exit_code, "timed_out": res.timed_out, "cancelled": res.cancelled,
+            "process_tree_stopped": res.process_tree_stopped}
+
+
+def read_schema(path: Path, expected_sha: str) -> tuple[dict | None, str | None]:
+    """The report schema from the product folder, only if it still is the bytes the run started with: (schema, None) or
+    (None, why). Never reads the run directory."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as e:
+        return None, f"the report schema {Path(path).name} cannot be read ({e.__class__.__name__}): the report cannot be checked"
+    if hashlib.sha256(raw).hexdigest() != expected_sha:
+        return None, f"the report schema {Path(path).name} in the product folder changed during the run: the report cannot be checked"
+    try:
+        schema = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None, f"the report schema {Path(path).name} is not valid JSON"
+    return (schema, None) if isinstance(schema, dict) else (None, f"the report schema {Path(path).name} must be a JSON object")
+
+
+def judge_dispatch(res, run_dir, wt, base_sha, task_id, units, allow, frozen, cfg, schema_path, schema_sha):
+    """Verdict of a dispatch run, from this run's directory and worktree only. cfg: the dispatch.report block;
+    schema_path / schema_sha: the product schema file and the hash recorded when the run started. Returns result.json's content."""
+    run_dir = Path(run_dir)
+    changed, err = changed_files(wt, base_sha)
+    violations = [f"{f} (frozen)" if in_scope(f, frozen) else f"{f} (outside the allowed scope)"
+                  for f in changed if in_scope(f, frozen) or not in_scope(f, allow)]
+    if err:
+        violations.append(f"(cannot list the changes, so the scope cannot be verified: {err})")
+    schema, schema_err = read_schema(schema_path, schema_sha)
+    path = run_dir / "report.json"
+    rep, problems = check_report(path, schema or {}, units, cfg)
+    if schema_err:
+        problems.insert(0, schema_err)
+    if res.exit_code != 0 and not (res.timed_out or res.cancelled):
+        problems.insert(0, f"the tool exit code is {res.exit_code}")
+    problems += [f"changed outside the scope: {v}" for v in violations]
+    status = rep.get(cfg["status_field"]) if rep else None
+    code, verdict = (3, "tree_not_stopped") if not res.process_tree_stopped else \
+        (6, "timeout") if res.timed_out else (6, "cancelled") if res.cancelled else \
+        (3, "scope_violation") if violations else (4, "no_evidence") if problems else \
+        (4, status) if status in ("partial", "blocked") else (0, "done")
+    proc = json.loads((run_dir / process_runner.PROCESS).read_text(encoding="utf-8"))
+    return {"schema_version": 1, "run_id": run_dir.name, "task_id": task_id, "finished_at": _now(),
+            "exit_code": code, "verdict": verdict, "problems": problems, "process": _process_facts(res),
+            "leftover_pids": proc["leftover_pids"],
+            "report": None if not path.is_file() else {
+                "path": "report.json", "sha256": state_io.file_revision(path),
+                "task": rep.get(cfg["task_field"]) if rep else None, "status": status},
+            "changed_files": changed, "scope_violations": violations, "worktree": str(wt)}
+
+
+def _stop_note(res, run_dir) -> None:
+    if not res.process_tree_stopped:
+        print(f"  the process tree could not be confirmed stopped: the claim stays and blocks a redispatch "
+              f"(python registry.py claims); see {Path(run_dir) / process_runner.PROCESS}")
+    elif res.timed_out or res.cancelled:
+        print(f"  {'timed out' if res.timed_out else 'cancelled'}: the whole process tree is stopped; this run does not "
+              f"count as success; where it stopped is in {Path(run_dir) / process_runner.CHECKPOINT}")
+
+
+def print_result(result, run_dir):
+    print(f"  result: {result['verdict']} (exit code {result['exit_code']}; tool exit={result['process']['exit_code']})")
+    rep = Path(run_dir) / "report.json"
+    if result["report"] and result["report"]["status"]:
+        try:
+            r = json.loads(rep.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            r = {}
+        print("  REPORT " + " ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in r.items() if k != "notes"))
+        if r.get("notes"):
+            print(f"         notes: {r['notes']}")
+    print(f"  changed files: {len(result['changed_files'])} ({result['worktree']})")
+    for p in result["problems"]:
+        print(f"  [problem] {p}")
+    if result["leftover_pids"]:
+        print(f"  [note] processes were left after the tool ended and have been stopped: "
+              f"{' '.join(map(str, result['leftover_pids']))}")
+
+
+# ---------- commands ----------
+
+def _git_out(repo, *args):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def gate(product: Path, installed: Path | None) -> int:
+    """The pre-dispatch gate (workflow_config.dispatch_gate); prints why it blocked."""
+    code, msgs = workflow_config.dispatch_gate(product, installed)
+    for m in msgs:
+        print(f"  {m}")
+    return code
+
+
+def cmd_check(a) -> int:
+    code = gate(a.product, a.installed)
+    print("dispatch gate: ok to dispatch" if code == 0 else f"dispatch gate: cannot dispatch (exit code {code})")
+    return code
+
+
+def _plan(a, policy: dict):
+    """Repo, base and report units of the task: a component fixes all three; a fix dispatch gives them. ConfigError(2) on bad input."""
+    comps = registry.load_registry(a.product)[0].get("components", [])
+    comp = next((c for c in comps if isinstance(c, dict) and c.get("id") == a.task), None)
+    if comp is not None:
+        if a.repo or a.unit:
+            raise _bad(f"{a.task} is a component: its repo and report units come from components.json, so --repo and "
+                       "--unit are not accepted")
+        if not comp.get("name"):
+            raise _bad(f"component {a.task} has no name in components.json (the base branch is comp/<name>)")
+        if comp.get("repo") not in policy["repos"]:
+            raise _bad(f"component {a.task}: repo \"{comp.get('repo')}\" is not in the repos of workflow.json")
+        return comp["repo"], a.base or f"comp/{comp['name']}", [a.task]
+    ids = {c.get("id") for c in comps if isinstance(c, dict)}
+    if not (a.repo in policy["repos"] and a.base and a.unit and set(a.unit) <= ids):
+        raise _bad(f"{a.task} is not a component: a fix dispatch needs --repo (a repo id of workflow.json), --base "
+                   "(the starting branch) and --unit (the component ids a report may name; repeatable)")
+    return a.repo, a.base, list(a.unit)
+
+
+def cmd_run(a) -> int:
+    product = a.product
+    policy = workflow_config.load_policy(workflow_config.policy_path(product))
+    disp = policy["dispatch"]
+    for k in ("implementer", "report"):
+        if k not in disp:
+            raise _bad(f"dispatch.{k} is missing in workflow.json: a dispatch needs dispatch.implementer and dispatch.report")
+    imp, rcfg = disp["implementer"], disp["report"]
+    if not TASK_RE.match(a.task):
+        raise _bad(f"task name \"{a.task}\": use letters, digits, . _ - (starting with a letter or digit)")
+    repo_id, base_ref, units = _plan(a, policy)
+    extra = extra_args(imp.get("extra_allowed", {}), imp["argv"], a.extra)
+    bad = [g for g in a.allow + a.frozen if _bad_glob(g)]
+    if not a.allow or bad:
+        raise _bad("--allow gives the paths the implementer may change (repo-relative, / separated globs such as "
+                   "src/unit/**)" + (f"; not acceptable: {' '.join(bad)}" if bad else ""))
+    prompt = Path(a.prompt_file)
+    if not prompt.is_file():
+        raise _bad(f"prompt file not found: {prompt}")
+    role = (policy.get("roles") or {}).get("implementer") or {}
+    for ph in ("model", "effort"):
+        if ph in _used(imp["argv"]) and not role.get(ph):
+            raise _bad(f"dispatch.implementer.argv uses {{{ph}}} but roles.implementer has no {ph} in workflow.json")
+    code = gate(product, a.installed)
+    if code:
+        print(f"dispatch gate did not pass (exit code {code}); nothing was dispatched or created "
+              f"(details: python workflow_config.py dispatch-check / doctor)")
+        return code
+    timeout = a.timeout or disp["timeout_seconds"]
+    lf = workflow_config.local_file(product)
+    mapping = workflow_config.mapping_with_home(policy, workflow_config.load_local(lf, policy), product)
+    repo = mapping.get(repo_id) or workflow_config.require_repo_path(repo_id, lf)
+    program = a.tool or imp["argv"][0]
+    tool = shutil.which(program)
+    if not tool:
+        print(f"cannot find the implementer program {program}")
+        return 5
+    base_sha = _git_out(repo, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}")
+    if not base_sha:
+        print(f"{repo_id} ({repo}) has no {base_ref}: make the preparation commit or name the start with --base")
+        return 4
+    schema_file = product / rcfg["schema"]
+    try:
+        schema_bytes = schema_file.read_bytes()
+    except OSError as e:
+        raise _bad(f"report schema {schema_file} cannot be read: {e}", 4)
+    try:
+        if not isinstance(json.loads(schema_bytes.decode("utf-8")), dict):
+            raise ValueError("the top level must be an object")
+    except (UnicodeDecodeError, ValueError) as e:
+        raise _bad(f"report schema {schema_file} is not a JSON object: {e}")
+    schema_sha = hashlib.sha256(schema_bytes).hexdigest()
+    wt_root = repo.parent / "wt"
+    values = {"model": role.get("model"), "effort": role.get("effort")}
+    if a.dry_run:
+        argv = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": "<worktree>", "run_dir": "<run dir>",
+                                                         "report": "<run dir>/report.json", "schema": "<run dir>/result.schema.json"}), *extra]
+        print("DRYRUN " + " ".join(argv) + f"  <prompt of {len(prompt.read_text(encoding='utf-8'))} characters on stdin>")
+        print(f"       worktree {wt_root / '<run id>'} (branch run/<run id>, start {base_ref} {base_sha[:12]}), "
+              f"timeout {timeout} s, allow {' '.join(a.allow)}, frozen {' '.join(a.frozen) or 'none'}")
+        return 0
+    runtime = state_io.runtime_root(product)
+    run_id = process_runner.new_run_id(a.task)
+    wt = wt_root / run_id
+    claim = state_io.acquire_claim(runtime, "resource", f"dispatch:{a.task}", run_id=run_id, worktree=wt,
+                                   resources=workflow_config.policy_resources(policy))
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", f"run/{run_id}", str(wt), base_sha],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode:
+            print(f"cannot open worktree {wt}: {r.stderr.strip()}")
+            return 3
+        run_dir = process_runner.create_run_dir(state_io.runs_root(runtime), run_id)
+        shutil.copyfile(prompt, run_dir / "prompt.md")
+        (run_dir / "result.schema.json").write_bytes(schema_bytes)  # a copy for the tool to read; the judge never trusts it
+        argv = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": wt, "run_dir": run_dir,
+                                                         "report": run_dir / "report.json",
+                                                         "schema": run_dir / "result.schema.json"}), *extra]
+        process_runner.write_once(run_dir / "manifest.json", {
+            "schema_version": 1, "run_id": run_id, "kind": "dispatch", "task_id": a.task, "created_at": _now(),
+            "machine": state_io.MACHINE, "report_units": units,
+            "source": {"repo_id": repo_id, "repo_path": str(repo), "base_ref": base_ref, "base_sha": base_sha},
+            "worktree": {"path": str(wt), "branch": f"run/{run_id}", "isolation": ISOLATION},
+            "limits": LIMITS,
+            "scope": {"allowed": a.allow, "frozen": a.frozen}, "cwd": str(wt),
+            "tool": {"name": imp["argv"][0], "path": tool, "model": role.get("model"), "effort": role.get("effort"),
+                     "extra_args": extra},
+            "argv": argv, "timeout_seconds": timeout,
+            "inputs": {"prompt": {"path": "prompt.md", "sha256": state_io.file_revision(run_dir / "prompt.md"),
+                                  "from": str(prompt)},
+                       "schema": {"path": "result.schema.json", "from": str(schema_file), "sha256": schema_sha}},
+            "outputs": {"stdout": process_runner.STDOUT, "stderr": process_runner.STDERR, "report": "report.json",
+                        "process": process_runner.PROCESS, "checkpoint": process_runner.CHECKPOINT,
+                        "result": "result.json", "temp": process_runner.TMP_DIR}})
+        print(f"dispatch {a.task}: run {run_id}\n  worktree {wt} (branch run/{run_id}, start {base_ref} {base_sha[:12]})\n"
+              f"  run directory {run_dir} (timeout {timeout} s; cancel: python dispatch_run.py --product {product} "
+              f"cancel {run_id})", flush=True)
+        res = process_runner.run_process(argv, wt, timeout, run_dir, stdin_path=run_dir / "prompt.md",
+                                         env=process_runner.child_env(run_dir),
+                                         register=lambda pid: claim.add_process(pid, group=True))
+        result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, a.frozen, rcfg, schema_file, schema_sha)
+        process_runner.write_once(run_dir / "result.json", result)
+        print_result(result, run_dir)
+        _stop_note(res, run_dir)
+        return result["exit_code"]
+    finally:
+        claim.release()
+
+
+def cmd_cancel(a) -> int:
+    if Path(a.run_id).name != a.run_id or a.run_id in (".", ".."):
+        raise _bad(f"bad run id: {a.run_id}")
+    runs = state_io.runs_root(state_io.runtime_root(a.product))
+    d = runs / a.run_id
+    if not d.is_dir():
+        print(f"no run {a.run_id} in {runs}")
+        return 4
+    process_runner.request_cancel(d)
+    print(f"asked run {a.run_id} to stop: the runner kills the whole process tree and writes {d / process_runner.CHECKPOINT}")
+    return 0
+
+
+def _positive(s: str) -> int:
+    n = int(s)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--product", type=Path, default=Path.cwd(),
+                    help="the product folder (holds specflow.md); default: the current directory")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("check", help="run only the pre-dispatch gate")
+    p.add_argument("--installed", type=Path, help="installed_plugins.json to check the lock against (default: the user's)")
+    p.set_defaults(func=cmd_check)
+    p = sub.add_parser("run", help="gate, then the implementer in a new worktree; the verdict comes from evidence")
+    p.add_argument("task", help="a component id, or a fix dispatch name (with --repo, --base, --unit)")
+    p.add_argument("--prompt-file", required=True)
+    p.add_argument("--allow", nargs="+", action="extend", default=[], metavar="GLOB", help="paths it may change (required)")
+    p.add_argument("--frozen", nargs="+", action="extend", default=[], metavar="GLOB", help="paths it must not touch")
+    p.add_argument("--base", help="the worktree's start (a component defaults to comp/<name>; a fix dispatch needs it)")
+    p.add_argument("--repo", help="fix dispatch: repo id of workflow.json")
+    p.add_argument("--unit", nargs="+", action="extend", metavar="ID", help="fix dispatch: component ids a report may name")
+    p.add_argument("--timeout", type=_positive, help="seconds (default: dispatch.timeout_seconds)")
+    p.add_argument("--dry-run", action="store_true", help="check and print the command; create nothing")
+    p.add_argument("--tool", help="program to run instead of argv[0] of the template")
+    p.add_argument("--installed", type=Path, help="installed_plugins.json for the gate (default: the user's)")
+    p.set_defaults(func=cmd_run)
+    p = sub.add_parser("cancel", help="ask a running run to stop")
+    p.add_argument("run_id")
+    p.set_defaults(func=cmd_cancel)
+    for sp in sub.choices.values():  # --product must also work after the subcommand
+        sp.add_argument("--product", type=Path, default=argparse.SUPPRESS)
+    args = sys.argv[1:] if argv is None else list(argv)
+    extra = []
+    if "--" in args:  # everything after -- is for the implementer tool, checked against extra_allowed
+        i = args.index("--")
+        args, extra = args[:i], args[i + 1:]
+    try:
+        a = ap.parse_args(args)
+    except SystemExit as e:
+        return 2 if e.code else 0
+    if extra and a.cmd != "run":
+        print("error: arguments after -- are only for run", file=sys.stderr)
+        return 2
+    a.extra, a.product = extra, Path(a.product)
+    try:
+        return a.func(a)
+    except (ConfigError, state_io.StateError, process_runner.RunnerError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return e.code
+    except subprocess.TimeoutExpired as e:
+        print(f"timeout: {e}", file=sys.stderr)
+        return 6
+    except Exception as e:  # noqa: BLE001
+        print(f"unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    sys.exit(main())

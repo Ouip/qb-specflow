@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import re
 import shutil
 import subprocess
@@ -152,6 +153,122 @@ def _evidence_kind_problems(kinds) -> list[str]:
     return e
 
 
+HANDOFF_KEYS = ("file", "task_notes", "local_only")
+PLACEHOLDERS = ("worktree", "run_dir", "report", "schema", "model", "effort")  # usable in dispatch.implementer.argv
+IMPLEMENTER_KEYS = ("argv", "extra_allowed")
+REPORT_KEYS = ("schema", "task_field", "status_field", "done_requires")
+REQUIRE_OPS = ("empty", "in", "equals")
+
+
+def rel_ok(p) -> bool:
+    """A normalized relative path: / separated, no drive, no .., not the folder itself."""
+    return (isinstance(p, str) and bool(p) and p != "." and not p.startswith("/") and "\\" not in p
+            and not re.match(r"^[A-Za-z]:", p) and ".." not in p.split("/") and p == posixpath.normpath(p))
+
+
+def handoff_problems(h) -> list[str]:
+    """`handoff`: {"file", "task_notes"?, "local_only"?} (handoff.py reads it). Paths are relative to the home repo root."""
+    if not isinstance(h, dict):
+        return ["handoff must be an object {\"file\": \"<handoff file, relative to the home repo root>\"}"]
+    e = []
+    extra = sorted(set(h) - set(HANDOFF_KEYS))
+    if extra:
+        e.append(f"handoff: unknown field {', '.join(extra)} (allowed: {', '.join(HANDOFF_KEYS)})")
+    if not rel_ok(h.get("file")):
+        e.append("handoff.file must be a normalized path relative to the home repo root (/ separated, no ..)")
+    tn = h.get("task_notes")
+    if tn is not None and not (isinstance(tn, str) and "{id}" in tn and rel_ok(tn.replace("{id}", "x"))):
+        e.append("handoff.task_notes must be null or a relative path with {id}, e.g. progress/{id}.md")
+    lo = h.get("local_only", [])
+    if not (isinstance(lo, list) and all(isinstance(x, str) and rel_ok(x.rstrip("/")) for x in lo)):
+        e.append("handoff.local_only must be an array of relative path prefixes, e.g. [\"build/\"]")
+    return e
+
+
+def template_flags(argv: list) -> set[str]:
+    """The option names a dispatch.implementer.argv template fixes (every element after the program that starts with -)."""
+    return {a.partition("=")[0] for a in argv[1:] if isinstance(a, str) and a.startswith("-")}
+
+
+def _implementer_problems(imp) -> list[str]:
+    """`dispatch.implementer`: {"argv": [program, arg...], "extra_allowed": {flag: takes_an_existing_file}}. argv may use
+    {worktree} {run_dir} {report} {schema} {model} {effort}; model and effort come from roles.implementer (checked when
+    a dispatch runs, and only if the template uses them). extra_allowed lists the only extra options a caller may add."""
+    if not isinstance(imp, dict):
+        return ["dispatch.implementer must be an object {\"argv\": [...], \"extra_allowed\": {...}}"]
+    e = []
+    extra = sorted(set(imp) - set(IMPLEMENTER_KEYS))
+    if extra:
+        e.append(f"dispatch.implementer: unknown field {', '.join(extra)} (allowed: {', '.join(IMPLEMENTER_KEYS)})")
+    argv = imp.get("argv")
+    if not _is_str_list(argv) or not argv:
+        e.append("dispatch.implementer.argv must be a non-empty array of strings (the program first)")
+        argv = []
+    for a in argv:
+        bad = [m for m in re.findall(r"\{([^{}]*)\}", a) if m not in PLACEHOLDERS]
+        if bad:
+            e.append(f"dispatch.implementer.argv: unknown placeholder {{{bad[0]}}} (known: "
+                     f"{' '.join('{' + n + '}' for n in PLACEHOLDERS)})")
+    allowed = imp.get("extra_allowed", {})
+    if not isinstance(allowed, dict):
+        e.append("dispatch.implementer.extra_allowed must be an object {flag: true|false}")
+        return e
+    fixed = template_flags(argv) if argv else set()
+    for k, v in allowed.items():
+        if not (isinstance(k, str) and k.startswith("-") and "=" not in k and len(k) > 1):
+            e.append(f"dispatch.implementer.extra_allowed: \"{k}\" must be an option name such as --flag (no =)")
+        elif k in fixed:
+            e.append(f"dispatch.implementer.extra_allowed: {k} is fixed by the argv template; it cannot be allowed as an extra")
+        if not isinstance(v, bool):
+            e.append(f"dispatch.implementer.extra_allowed.{k} must be true (takes an existing file) or false (no value)")
+    return e
+
+
+def _require_problems(i: int, r) -> list[str]:
+    at = f"dispatch.report.done_requires[{i}]"
+    if not isinstance(r, dict):
+        return [f"{at} must be an object"]
+    e = []
+    if not (isinstance(r.get("field"), str) and r["field"]):
+        e.append(f"{at}.field must be a non-empty field name")
+    ops = [k for k in r if k in REQUIRE_OPS]
+    extra = sorted(set(r) - {"field", *REQUIRE_OPS})
+    if extra:
+        e.append(f"{at}: unknown field {', '.join(extra)}")
+    if len(ops) != 1:
+        e.append(f"{at} needs exactly one of {', '.join(REQUIRE_OPS)}")
+    elif ops[0] == "empty" and r["empty"] is not True:
+        e.append(f"{at}.empty must be true")
+    elif ops[0] == "in" and not (isinstance(r["in"], list) and r["in"]):
+        e.append(f"{at}.in must be a non-empty array")
+    return e
+
+
+def _report_problems(rep) -> list[str]:
+    """`dispatch.report`: how the implementer's report is read. schema is a path inside the product folder (the judge
+    reads it from there, never from the run directory); task_field names the field that must equal the dispatched
+    task (or one of its units); status_field holds done / partial / blocked; done_requires lists extra conditions a
+    `done` report must meet: [{"field", "empty": true} | {"field", "in": [...]} | {"field", "equals": V}]."""
+    if not isinstance(rep, dict):
+        return ["dispatch.report must be an object"]
+    e = []
+    extra = sorted(set(rep) - set(REPORT_KEYS))
+    if extra:
+        e.append(f"dispatch.report: unknown field {', '.join(extra)} (allowed: {', '.join(REPORT_KEYS)})")
+    if not rel_ok(rep.get("schema")):
+        e.append("dispatch.report.schema must be a relative path inside the product folder (/ separated, no ..)")
+    for k in ("task_field", "status_field"):
+        if not (isinstance(rep.get(k), str) and rep[k]):
+            e.append(f"dispatch.report.{k} must be a non-empty field name")
+    dr = rep.get("done_requires", [])
+    if not isinstance(dr, list):
+        e.append("dispatch.report.done_requires must be an array")
+    else:
+        for i, r in enumerate(dr):
+            e += _require_problems(i, r)
+    return e
+
+
 def validate_policy(d: dict) -> list[str]:
     """Return every problem (does not stop at the first); an empty list means valid."""
     e: list[str] = []
@@ -162,7 +279,7 @@ def validate_policy(d: dict) -> list[str]:
             e.append(f"top-level field \"{k}\" is not allowed: component state lives only in components.json")
     # Required: repos, tools, capabilities, dispatch.timeout_seconds. Optional but validated when present: entry,
     # test_profiles, roles, resources, repos.*.remote_alias (default "origin"), dispatch.session_timeout_seconds,
-    # transitions, evidence_kinds.
+    # transitions, evidence_kinds, handoff, dispatch.implementer and dispatch.report (dispatch_run.py needs the last two).
     for k in ("repos", "tools", "capabilities", "dispatch"):
         if not isinstance(d.get(k), dict) or not d.get(k):
             e.append(f"{k} is missing (must be a non-empty object)")
@@ -227,6 +344,12 @@ def validate_policy(d: dict) -> list[str]:
     for c in disp.get("requires_capabilities", []):
         if c not in caps:
             e.append(f"dispatch.requires_capabilities: \"{c}\" is not in capabilities")
+    if "implementer" in disp:
+        e += _implementer_problems(disp["implementer"])
+    if "report" in disp:
+        e += _report_problems(disp["report"])
+    if "handoff" in d:
+        e += handoff_problems(d["handoff"])
     if "transitions" in d:
         e += _transition_problems(d["transitions"], repos if isinstance(repos, dict) else {})
     if "evidence_kinds" in d:

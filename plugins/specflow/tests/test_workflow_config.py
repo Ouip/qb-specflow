@@ -172,6 +172,65 @@ class TestSchema(Tmp):
             with self.subTest(absent=key):
                 self.assertEqual(wc.validate_policy(d), [])
 
+    def test_handoff_block_is_validated_when_present(self):
+        """A bad handoff block fails validate / doctor up front, not only when handoff.py runs."""
+        ok = policy()
+        ok["handoff"] = {"file": ".notes/handoff.md", "task_notes": "progress/{id}.md", "local_only": ["build/"]}
+        self.assertEqual(wc.validate_policy(ok), [])
+        bad_blocks = ["handoff.md", {}, {"file": "/abs/h.md"}, {"file": "../h.md"}, {"file": "h.md", "extra": 1},
+                      {"file": "h.md", "task_notes": "progress/x.md"}, {"file": "h.md", "local_only": "build/"},
+                      {"file": "h.md", "local_only": [".."]}]
+        for b in bad_blocks:
+            with self.subTest(block=b):
+                d = policy()
+                d["handoff"] = b
+                self.assertTrue(any("handoff" in e for e in wc.validate_policy(d)), wc.validate_policy(d))
+        d = self.make_product(pol={**policy(), "handoff": {"file": "/abs"}})[1]
+        self.assertEqual(self.run_cli("validate", "--product", d)[0], 2)
+
+    def test_dispatch_implementer_and_report_are_validated_when_present(self):
+        impl = {"argv": ["tool", "--cd", "{worktree}", "-o", "{report}", "--schema", "{schema}", "-m", "{model}",
+                         "--effort", "{effort}", "--dir", "{run_dir}"], "extra_allowed": {"--ephemeral": False, "-i": True}}
+        rep = {"schema": "report.schema.json", "task_field": "task", "status_field": "status",
+               "done_requires": [{"field": "unmet", "empty": True}, {"field": "tests", "in": ["pass", "na"]},
+                                 {"field": "ok", "equals": True}]}
+        d = policy()
+        d["dispatch"].update(implementer=impl, report=rep)
+        self.assertEqual(wc.validate_policy(d), [])
+
+        def errs(mut):
+            x = policy()
+            x["dispatch"].update(implementer=copy.deepcopy(impl), report=copy.deepcopy(rep))
+            mut(x["dispatch"])
+            return wc.validate_policy(x)
+        cases = {
+            "implementer.argv": lambda t: t["implementer"].__setitem__("argv", []),
+            "implementer.argv ": lambda t: t["implementer"].__setitem__("argv", ["tool", 3]),
+            "{bogus}": lambda t: t["implementer"]["argv"].append("{bogus}"),
+            "extra_allowed": lambda t: t["implementer"].__setitem__("extra_allowed", {"--x": "yes"}),
+            "extra_allowed ": lambda t: t["implementer"].__setitem__("extra_allowed", {"x": False}),
+            "fixed": lambda t: t["implementer"].__setitem__("extra_allowed", {"--cd": False}),
+            "unknown field": lambda t: t["implementer"].__setitem__("extra", 1),
+            "report.schema": lambda t: t["report"].__setitem__("schema", "../x.json"),
+            "report.schema ": lambda t: t["report"].__setitem__("schema", ""),
+            "report.task_field": lambda t: t["report"].__setitem__("task_field", ""),
+            "report.status_field": lambda t: t["report"].pop("status_field"),
+            "done_requires": lambda t: t["report"].__setitem__("done_requires", {"field": "x"}),
+            "done_requires[0]": lambda t: t["report"]["done_requires"][0].pop("empty"),
+            "done_requires[1]": lambda t: t["report"]["done_requires"][1].update(equals=1),
+            "done_requires[0] ": lambda t: t["report"]["done_requires"][0].__setitem__("empty", False),
+            "unknown field ": lambda t: t["report"].__setitem__("extra", 1),
+        }
+        for key, mut in cases.items():
+            with self.subTest(key=key):
+                got = errs(mut)
+                self.assertTrue(any(key.strip() in e for e in got), got)
+        for absent in ("implementer", "report"):  # each block is optional for validate; dispatch_run needs both
+            x = policy()
+            x["dispatch"].update(implementer=impl, report=rep)
+            del x["dispatch"][absent]
+            self.assertEqual(wc.validate_policy(x), [])
+
     def test_exactly_one_home_repo(self):
         none_home = policy()
         none_home["repos"]["docs"].pop("home")

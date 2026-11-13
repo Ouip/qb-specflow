@@ -99,7 +99,6 @@ SCHEMA_VERSION = 1
 ROOT_MANIFEST_NAME = "handoff.manifest.json"  # next to the handoff file: the latest handoff
 HANDOFFS_DIRNAME = "handoffs"                 # next to the handoff file: <handoff_id>.json, never overwritten
 HANDOFF_MAX_BYTES = 5120                      # export refuses a longer handoff file
-HANDOFF_KEYS = ("file", "task_notes", "local_only")
 MANIFEST_KEYS = ("schema_version", "handoff_id", "created_at", "source_machine", "task_ids",
                  "repos", "required_files", "artifacts", "pending_transfers")
 REPO_KEYS = ("repo_id", "remote_alias", "ref", "commit_sha")
@@ -126,9 +125,7 @@ class HandoffError(Exception):
 
 # ---------- configuration ----------
 
-def _rel_ok(p) -> bool:
-    return (isinstance(p, str) and bool(p) and p != "." and not p.startswith("/") and "\\" not in p
-            and not re.match(r"^[A-Za-z]:", p) and ".." not in p.split("/") and p == posixpath.normpath(p))
+_rel_ok = wc.rel_ok  # the one definition lives in workflow_config, which validates the handoff block too
 
 
 @dataclass(frozen=True)
@@ -164,18 +161,8 @@ def handoff_config(policy: dict) -> HandoffConfig:
     if not isinstance(h, dict):
         raise HandoffError(f"{wc.POLICY_NAME} has no \"handoff\" object: add "
                            "{\"file\": \"<handoff file, relative to the home repo root>\"}", 2)
-    e = []
-    extra = sorted(set(h) - set(HANDOFF_KEYS))
-    if extra:
-        e.append(f"unknown field {', '.join(extra)} (allowed: {', '.join(HANDOFF_KEYS)})")
-    if not _rel_ok(h.get("file")):
-        e.append("handoff.file must be a normalized path relative to the home repo root (/ separated, no ..)")
-    tn = h.get("task_notes")
-    if tn is not None and not (isinstance(tn, str) and "{id}" in tn and _rel_ok(tn.replace("{id}", "x"))):
-        e.append("handoff.task_notes must be null or a relative path with {id}, e.g. progress/{id}.md")
-    lo = h.get("local_only", [])
-    if not (isinstance(lo, list) and all(isinstance(x, str) and _rel_ok(x.rstrip("/")) for x in lo)):
-        e.append("handoff.local_only must be an array of relative path prefixes, e.g. [\"build/\"]")
+    e = wc.handoff_problems(h)  # the same check validate_policy runs
+    tn, lo = h.get("task_notes"), h.get("local_only", [])
     if e:
         raise HandoffError(f"{wc.POLICY_NAME}: " + "; ".join(e), 2)
     return HandoffConfig(wc.home_id(policy), h["file"], tn, tuple(x.rstrip("/") for x in lo))
