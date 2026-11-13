@@ -516,6 +516,39 @@ class DispatchTest(Base):
         self.assertEqual(m["tool"]["extra_args"], ["--ephemeral", "--image", str(img)])
         self.assertEqual(self.args()["argv"][-3:], ["--ephemeral", "--image", str(img)])
 
+    def test_relative_extra_arg_file_reaches_the_tool_resolved(self):
+        """The tool runs in the worktree: a file named relative to the caller's directory is passed resolved."""
+        (self.tmp / "a.png").write_bytes(b"png")
+        want = str((self.tmp / "a.png").resolve())
+        old = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, old)
+        for extra in (("--image", "a.png"), ("--image=a.png",)):
+            with self.subTest(extra=extra):
+                rc, out = self.dispatch(*extra)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.last()[1]["tool"]["extra_args"], ["--image", want])
+                self.assertEqual(self.args()["argv"][-2:], ["--image", want])
+
+    @unittest.skipUnless(os.name == "nt", "only Windows runs a .cmd / .bat through cmd.exe")
+    def test_batch_file_tool_refuses_cmd_metacharacters_before_anything_is_created(self):
+        img = self.tmp / "a%PATH%.png"
+        img.write_bytes(b"png")
+        self.assertEqual(self.cli.suffix, ".cmd")
+        rc, out = self.dispatch("--image", str(img))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cmd.exe", out)
+        for model in ("m1&echo x", "m1|x", "m1>x", "m1^x"):
+            with self.subTest(model=model):
+                self.policy["roles"]["implementer"]["model"] = model
+                self.save_policy()
+                self.assertEqual(self.dispatch()[0], 2)
+                self.assertEqual(self.dispatch(more=("--dry-run",))[0], 2)
+        self.assertEqual(self.runs(), [])
+        self.assertFalse((self.tmp / "wt").exists())
+        self.assertEqual(S.list_claims(self.runtime), [])
+        self.assertFalse((self.log / "args.json").exists())
+
     def test_bad_input_is_rejected(self):
         self.assertEqual(self.dispatch(task="Z9")[0], 2)  # not a component, no --repo/--base/--unit
         self.assertEqual(self.dispatch(allow=())[0], 2)

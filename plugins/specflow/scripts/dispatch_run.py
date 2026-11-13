@@ -29,8 +29,10 @@ workflow.json, block "dispatch" (besides timeout_seconds, requires_lock, require
              "done_requires": [{"field": "unmet", "empty": true}, {"field": "tests", "in": ["pass", "na"]}]}
 argv placeholders: {worktree} {run_dir} {report} (= run_dir/report.json) {schema} (a copy in the run directory)
 {model} {effort} (from roles.implementer; if the template uses one and the role does not give it, exit 2). The prompt
-is the tool's stdin. extra_allowed: flag -> true if it takes an existing file, false if it takes no value; a flag that the
-template already fixes is refused (2), as is anything not listed. done_requires: extra conditions a `done` report meets
+is the tool's stdin. extra_allowed: flag -> true if it takes an existing file (passed resolved against the caller's
+directory: the tool runs in the worktree), false if it takes no value; a flag that the template already fixes is refused
+(2), as is anything not listed. On Windows a program that is a .cmd / .bat runs through cmd.exe, which parses the command
+line again: an argument with & | < > ^ % is then refused (2) before anything is created. done_requires: extra conditions a `done` report meets
 (empty: the field is [] / "" / null; in: the value is one of the list; equals: the value is exactly it).
 The report schema may use only what the judge checks: top level type "object", required, additionalProperties
 (true / false), properties; per property type (a name, or a list such as ["array", "null"]), enum, minimum, items
@@ -62,6 +64,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -191,6 +194,22 @@ def fill_template(template: list[str], values: dict) -> list[str]:
     return [re.sub(r"\{(\w+)\}", lambda m: str(values[m.group(1)]), a) for a in template]
 
 
+_CMD_SPECIAL = "&|<>^%"
+
+
+def cmd_reparse_problem(argv: list[str]) -> str | None:
+    """On Windows a .cmd / .bat program runs through cmd.exe, which parses the whole command line again: & | < > ^ % in
+    any argument would act as cmd.exe syntax (start another command, redirect, expand a variable). None if safe."""
+    if os.name != "nt" or Path(argv[0]).suffix.lower() not in (".cmd", ".bat"):
+        return None
+    bad = [x for x in argv if any(c in x for c in _CMD_SPECIAL)]
+    if not bad:
+        return None
+    return (f"the implementer program {argv[0]} is a .cmd / .bat file: Windows runs it through cmd.exe, which parses "
+            f"the command line again, so {' '.join(_CMD_SPECIAL)} in an argument would act as cmd.exe syntax; refused: "
+            f"{', '.join(bad)} (change that path or value, or use a program that is not a batch file)")
+
+
 def extra_args(allowed: dict, template: list[str], extra: list[str]) -> list[str]:
     """Extra tool arguments checked against dispatch.implementer.extra_allowed; returns what to append, else ConfigError(2)."""
     fixed = workflow_config.template_flags(template)
@@ -208,7 +227,7 @@ def extra_args(allowed: dict, template: list[str], extra: list[str]) -> list[str
                 val = extra[i] if i < len(extra) else ""
             if not val or val.startswith("-") or not Path(val).is_file():
                 raise _bad(f"{name} needs an existing file: {val or '(none given)'}")
-            out += [name, val]
+            out += [name, str(Path(val).resolve())]  # the tool runs in the worktree, not in the caller's directory
         elif eq:
             raise _bad(f"{name} takes no value: {a}")
         else:
@@ -556,16 +575,22 @@ def cmd_run(a) -> int:
     schema_sha = hashlib.sha256(schema_bytes).hexdigest()
     wt_root = repo.parent / "wt"
     values = {"model": role.get("model"), "effort": role.get("effort")}
+    runtime = state_io.runtime_root(product)
+    run_id = process_runner.new_run_id(a.task)
+    wt, run_dir = wt_root / run_id, state_io.runs_root(runtime) / run_id  # paths only: nothing is created yet
+    argv = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": wt, "run_dir": run_dir,
+                                                     "report": run_dir / "report.json",
+                                                     "schema": run_dir / "result.schema.json"}), *extra]
+    unsafe = cmd_reparse_problem(argv)
+    if unsafe:
+        raise _bad(unsafe)
     if a.dry_run:
-        argv = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": "<worktree>", "run_dir": "<run dir>",
-                                                         "report": "<run dir>/report.json", "schema": "<run dir>/result.schema.json"}), *extra]
-        print("DRYRUN " + " ".join(argv) + f"  <prompt of {len(prompt.read_text(encoding='utf-8'))} characters on stdin>")
+        dry = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": "<worktree>", "run_dir": "<run dir>",
+                                                        "report": "<run dir>/report.json", "schema": "<run dir>/result.schema.json"}), *extra]
+        print("DRYRUN " + " ".join(dry) + f"  <prompt of {len(prompt.read_text(encoding='utf-8'))} characters on stdin>")
         print(f"       worktree {wt_root / '<run id>'} (branch run/<run id>, start {base_ref} {base_sha[:12]}), "
               f"timeout {timeout} s, allow {' '.join(a.allow)}, frozen {' '.join(frozen) or 'none'}")
         return 0
-    runtime = state_io.runtime_root(product)
-    run_id = process_runner.new_run_id(a.task)
-    wt = wt_root / run_id
     claim = state_io.acquire_claim(runtime, "resource", f"dispatch:{a.task}", run_id=run_id, worktree=wt,
                                    resources=workflow_config.policy_resources(policy))
     try:
@@ -577,9 +602,6 @@ def cmd_run(a) -> int:
         run_dir = process_runner.create_run_dir(state_io.runs_root(runtime), run_id)
         shutil.copyfile(prompt, run_dir / "prompt.md")
         (run_dir / "result.schema.json").write_bytes(schema_bytes)  # a copy for the tool to read; the judge never trusts it
-        argv = [tool, *fill_template(imp["argv"][1:], {**values, "worktree": wt, "run_dir": run_dir,
-                                                         "report": run_dir / "report.json",
-                                                         "schema": run_dir / "result.schema.json"}), *extra]
         process_runner.write_once(run_dir / "manifest.json", {
             "schema_version": 1, "run_id": run_id, "kind": "dispatch", "task_id": a.task, "created_at": _now(),
             "machine": state_io.MACHINE, "report_units": units,
