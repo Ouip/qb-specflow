@@ -11,16 +11,17 @@ from evidence only. Stdlib only.
 --product is the product folder (holds specflow.md, workflow.json, components.json); it may also come after the
 subcommand. `check` runs only the gate. `run` does, in this order: read the policy and check the arguments (2), run the
 gate (lock mismatch 3, capability missing 5, probe timeout 6; nothing is created when it fails), find the program (5)
-and the base commit (4), check --frozen against the base commit's files (2), take the claim resource dispatch:<TASK> (3 if held), open a worktree and a run directory, start
-the tool and judge. `cancel` asks a running run to stop (the runner kills the whole process tree and writes a checkpoint).
+and the base commit (4), check --frozen against the base commit's files and the report schema (2), take the claim
+resource dispatch:<TASK> (3 if held), open a worktree and a run directory, start the tool and judge. `cancel` asks a
+running run to stop (the runner kills the whole process tree and writes a checkpoint).
 
 TASK is a component id of components.json (its repo is the component's repo, the base is --base or comp/<name>, and the
 report's task must be TASK), or a fix dispatch: any other name ([A-Za-z0-9._-]) with --repo (a repo id of workflow.json),
 --base and --unit (the component ids the report's task may be). --allow / --frozen are repo-relative, / separated globs
 (* does not cross /, ** does); every changed file must match --allow and none --frozen. A --frozen glob may name a
 directory (dir or dir/ means dir/**; a leading ./ is dropped); one that matches no file of the base commit is refused
-(2), since it would freeze nothing. --tool replaces the program
-(argv[0]) of the template; extra arguments after -- are only accepted if dispatch.implementer.extra_allowed lists them.
+(2), since it would freeze nothing. --tool replaces the program (argv[0]) of the template; extra arguments after -- are
+only accepted if dispatch.implementer.extra_allowed lists them.
 
 workflow.json, block "dispatch" (besides timeout_seconds, requires_lock, requires_capabilities):
   "implementer": {"argv": ["<tool>", "--cd", "{worktree}", "-o", "{report}", "--schema", "{schema}", "-m", "{model}"],
@@ -32,8 +33,9 @@ argv placeholders: {worktree} {run_dir} {report} (= run_dir/report.json) {schema
 is the tool's stdin. extra_allowed: flag -> true if it takes an existing file (passed resolved against the caller's
 directory: the tool runs in the worktree), false if it takes no value; a flag that the template already fixes is refused
 (2), as is anything not listed. On Windows a program that is a .cmd / .bat runs through cmd.exe, which parses the command
-line again: an argument with & | < > ^ % is then refused (2) before anything is created. done_requires: extra conditions a `done` report meets
-(empty: the field is [] / "" / null; in: the value is one of the list; equals: the value is exactly it).
+line again: an argument with & | < > ^ % is then refused (2) before anything is created. done_requires: extra
+conditions a `done` report meets (empty: the field is [] / "" / null; in: the value is one of the list; equals: the
+value is exactly it).
 The report schema may use only what the judge checks: top level type "object", required, additionalProperties
 (true / false), properties; per property type (a name, or a list such as ["array", "null"]), enum, minimum, items
 (type only); pattern only on the task field (not read: the task is compared with the dispatch's units); annotations
