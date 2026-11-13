@@ -385,6 +385,28 @@ class DispatchTest(Base):
         self.assertEqual(r["scope_violations"], ["include/a1.h (frozen)"])
         self.assertEqual(r["changed_files"], ["include/a1.h", "src/a1/a.c"])
 
+    def test_frozen_directory_forms_freeze_the_directory(self):
+        for g in ("include/", "include", "./include/**", "./include"):
+            with self.subTest(g=g):
+                rc, out = self.dispatch(mode="frozen", frozen=(g,))
+                _, m, r = self.last()
+                self.assertEqual((rc, r["verdict"]), (3, "scope_violation"), out)
+                self.assertEqual(r["scope_violations"], ["include/a1.h (frozen)"])
+                self.assertEqual(m["scope"]["frozen"], ["include/**"])
+
+    def test_frozen_glob_matching_no_base_file_is_2_and_creates_nothing(self):
+        for g in ("Include/**", "tests/scenarios/", "include/*.c", "./"):
+            with self.subTest(g=g):
+                rc, out = self.dispatch(frozen=(g,))
+                self.assertEqual(rc, 2, out)
+                self.assertIn(g, out)
+        self.assertEqual(self.dispatch(frozen=("nope/**",), more=("--dry-run",))[0], 2)
+        self.assertEqual(self.runs(), [])
+        self.assertFalse((self.tmp / "wt").exists())
+        self.assertEqual(S.list_claims(self.runtime), [])
+        self.assertEqual(git(self.app, "branch", "--list", "run/*"), "")
+        self.assertFalse((self.log / "args.json").exists())
+
     def test_worktree_head_off_the_run_branch_is_scope_violation(self):
         r = self.assert_not_done("detach", 3, "scope_violation", "run/")
         self.assertEqual(r["changed_files"], ["src/a1/a.c"])

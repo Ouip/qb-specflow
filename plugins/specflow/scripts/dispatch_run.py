@@ -11,13 +11,15 @@ from evidence only. Stdlib only.
 --product is the product folder (holds specflow.md, workflow.json, components.json); it may also come after the
 subcommand. `check` runs only the gate. `run` does, in this order: read the policy and check the arguments (2), run the
 gate (lock mismatch 3, capability missing 5, probe timeout 6; nothing is created when it fails), find the program (5)
-and the base commit (4), take the claim resource dispatch:<TASK> (3 if held), open a worktree and a run directory, start
+and the base commit (4), check --frozen against the base commit's files (2), take the claim resource dispatch:<TASK> (3 if held), open a worktree and a run directory, start
 the tool and judge. `cancel` asks a running run to stop (the runner kills the whole process tree and writes a checkpoint).
 
 TASK is a component id of components.json (its repo is the component's repo, the base is --base or comp/<name>, and the
 report's task must be TASK), or a fix dispatch: any other name ([A-Za-z0-9._-]) with --repo (a repo id of workflow.json),
 --base and --unit (the component ids the report's task may be). --allow / --frozen are repo-relative, / separated globs
-(* does not cross /, ** does); every changed file must match --allow and none --frozen. --tool replaces the program
+(* does not cross /, ** does); every changed file must match --allow and none --frozen. A --frozen glob may name a
+directory (dir or dir/ means dir/**; a leading ./ is dropped); one that matches no file of the base commit is refused
+(2), since it would freeze nothing. --tool replaces the program
 (argv[0]) of the template; extra arguments after -- are only accepted if dispatch.implementer.extra_allowed lists them.
 
 workflow.json, block "dispatch" (besides timeout_seconds, requires_lock, requires_capabilities):
@@ -143,6 +145,35 @@ def in_scope(path, patterns):
 
 def _bad_glob(g):
     return not g or "\\" in g or ":" in g or g.startswith("/") or ".." in g.split("/")
+
+
+def _frozen_form(g):
+    """A --frozen glob as written, made comparable: a leading ./ is dropped, a trailing / means the whole directory."""
+    while g.startswith("./"):
+        g = g[2:]
+    return g.rstrip("/") + "/**" if g.endswith("/") else g
+
+
+def frozen_globs(repo, base_sha, frozen):
+    """The --frozen globs as checked: _frozen_form, and a directory of the base commit's tree means all of it (dir/**).
+    A glob that matches no file of that tree would freeze nothing (a typo, a wrong case, a path that is not there):
+    ConfigError(2) naming every such glob, before anything is created."""
+    r = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "-z", base_sha], capture_output=True)
+    if r.returncode:
+        raise _bad(f"cannot list the files of {base_sha[:12]}: {r.stderr.decode('utf-8', 'replace').strip()}", 4)
+    files = [x.decode("utf-8", "replace") for x in r.stdout.split(b"\0") if x]
+    dirs = {"/".join(p.split("/")[:i]) for p in files for i in range(1, p.count("/") + 1)}
+    out, none = [], []
+    for g in frozen:
+        f = _frozen_form(g)
+        f = f + "/**" if f in dirs else f
+        if not any(_glob_re(f).match(p) for p in files):
+            none.append(g)
+        out.append(f)
+    if none:
+        raise _bad(f"--frozen {' '.join(none)}: matches no file of {base_sha[:12]}, so it would freeze nothing (check "
+                   "the spelling, the case and the path; a directory may be given as dir or dir/)")
+    return out
 
 
 # ---------- argv template ----------
@@ -413,7 +444,7 @@ def cmd_run(a) -> int:
         raise _bad(f"task name \"{a.task}\": use letters, digits, . _ - (starting with a letter or digit)")
     repo_id, base_ref, units = _plan(a, policy)
     extra = extra_args(imp.get("extra_allowed", {}), imp["argv"], a.extra)
-    bad = [g for g in a.allow + a.frozen if _bad_glob(g)]
+    bad = [g for g in a.allow if _bad_glob(g)] + [g for g in a.frozen if _bad_glob(_frozen_form(g))]
     if not a.allow or bad:
         raise _bad("--allow gives the paths the implementer may change (repo-relative, / separated globs such as "
                    "src/unit/**)" + (f"; not acceptable: {' '.join(bad)}" if bad else ""))
@@ -442,6 +473,7 @@ def cmd_run(a) -> int:
     if not base_sha:
         print(f"{repo_id} ({repo}) has no {base_ref}: make the preparation commit or name the start with --base")
         return 4
+    frozen = frozen_globs(repo, base_sha, a.frozen)
     schema_file = product / rcfg["schema"]
     try:
         schema_bytes = schema_file.read_bytes()
@@ -460,7 +492,7 @@ def cmd_run(a) -> int:
                                                          "report": "<run dir>/report.json", "schema": "<run dir>/result.schema.json"}), *extra]
         print("DRYRUN " + " ".join(argv) + f"  <prompt of {len(prompt.read_text(encoding='utf-8'))} characters on stdin>")
         print(f"       worktree {wt_root / '<run id>'} (branch run/<run id>, start {base_ref} {base_sha[:12]}), "
-              f"timeout {timeout} s, allow {' '.join(a.allow)}, frozen {' '.join(a.frozen) or 'none'}")
+              f"timeout {timeout} s, allow {' '.join(a.allow)}, frozen {' '.join(frozen) or 'none'}")
         return 0
     runtime = state_io.runtime_root(product)
     run_id = process_runner.new_run_id(a.task)
@@ -485,7 +517,7 @@ def cmd_run(a) -> int:
             "source": {"repo_id": repo_id, "repo_path": str(repo), "base_ref": base_ref, "base_sha": base_sha},
             "worktree": {"path": str(wt), "branch": f"run/{run_id}", "isolation": ISOLATION},
             "limits": LIMITS,
-            "scope": {"allowed": a.allow, "frozen": a.frozen}, "cwd": str(wt),
+            "scope": {"allowed": a.allow, "frozen": frozen}, "cwd": str(wt),
             "tool": {"name": imp["argv"][0], "path": tool, "model": role.get("model"), "effort": role.get("effort"),
                      "extra_args": extra},
             "argv": argv, "timeout_seconds": timeout,
@@ -501,7 +533,7 @@ def cmd_run(a) -> int:
         res = process_runner.run_process(argv, wt, timeout, run_dir, stdin_path=run_dir / "prompt.md",
                                          env=process_runner.child_env(run_dir),
                                          register=lambda pid: claim.add_process(pid, group=True))
-        result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, a.frozen, rcfg, schema_file, schema_sha)
+        result = judge_dispatch(res, run_dir, wt, base_sha, a.task, units, a.allow, frozen, rcfg, schema_file, schema_sha)
         process_runner.write_once(run_dir / "result.json", result)
         print_result(result, run_dir)
         _stop_note(res, run_dir)
