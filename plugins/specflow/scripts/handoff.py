@@ -28,7 +28,8 @@ export: writes handoffs/<handoff_id>.json (fixed, never overwritten) and handoff
   refused. --ref app=task/a1 records the commit of a WIP task branch (or task worktree) without switching the mapped
   checkout (default: the checkout's HEAD); one --ref per repo.
 verify: checks every item of the manifest and lists all problems at once (a timeout on one item does not stop the
-  others); without --handoff it reads the root manifest, and with --fetch a root manifest on the remote branch the
+  others); without --handoff it reads the root manifest (a local change to that file is a local change in the way,
+  3), and with --fetch a root manifest on the remote branch the
   handoff was published to (the home repo's ref in the manifest; the integration branch when that ref is HEAD or not
   tracked here) that names another handoff, on commits this checkout has not pulled, makes it stale (3): pull first.
   Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
@@ -1410,6 +1411,13 @@ def cmd_verify(a) -> int:
     alias = wc.remote_alias(policy, cfg.home) if a.fetch else None
     m = load_manifest(root, cfg, a.handoff, fetch_alias=alias)
     chk = verify_handoff(m, local, a.fetch, policy=policy, capabilities=a.for_caps)
+    if a.handoff is None:
+        # the handoff came from the working-tree root manifest: it must be the committed one (git status, so a line
+        # ending conversion on checkout does not count as a change)
+        for xy, p in Git(root).status(cfg.root_manifest):
+            chk.add("local_dirty", f"{cfg.home}:{p}", f"the root manifest this verify read differs from the committed "
+                                                      f"one ({xy.strip()}): restore or commit it first, or name the "
+                                                      "handoff with --handoff")
     if a.fetch and a.handoff is None:  # the root manifest here may be an older one than the remote's
         newer = newer_on_remote(root, cfg, policy, alias, m)
         if newer:

@@ -721,6 +721,29 @@ class TestVerifyScenarios(World):
         code, a = self.cli("A", "verify", "--fetch")
         self.assertEqual((code, a["level"], a["handoff_id"], a["stale"]), (0, "resumable", h1["handoff_id"], []), a)
 
+    def test_root_manifest_changed_in_the_working_tree_is_not_resumable(self):
+        """B pulled H2, then its working-tree root manifest holds H1 again (not committed): verify without --handoff
+        reads that file, so it must not call H1 resumable."""
+        code, h1 = self.wrapup()
+        self.clone_b()
+        code, h2 = self.wrapup()
+        self.assertEqual((code, h2["push_rc"]), (0, 0), h2)
+        b = self.B[self.HOME]
+        git(b, "pull", "-q", "--ff-only")
+        git(b, "checkout", "HEAD~1", "--", self.cfg.root_manifest)
+        item = f"{self.HOME}:{self.cfg.root_manifest}"
+        code, v = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, v["level"], v["handoff_id"]), (3, None, h1["handoff_id"]), v)
+        self.assertIn(item, items(v["local_dirty"]))
+        code, v = self.cli("B", "verify")
+        self.assertEqual(code, 3, v)
+        self.assertIn(item, items(v["local_dirty"]))
+        code, v = self.cli("B", "verify", "--fetch", "--handoff", h2["handoff_id"])  # named: the file is not read
+        self.assertEqual((code, v["level"]), (0, "resumable"), v)
+        git(b, "checkout", "HEAD", "--", self.cfg.root_manifest)
+        code, v = self.cli("B", "verify", "--fetch")
+        self.assertEqual((code, v["level"], v["handoff_id"]), (0, "resumable", h2["handoff_id"]), v)
+
     def test_local_commit_and_newer_handoff_on_remote_is_stale(self):
         """B has a commit of its own (not pushed) and did not pull A's H2."""
         code, h1 = self.wrapup()
