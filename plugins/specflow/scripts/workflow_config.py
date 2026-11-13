@@ -10,7 +10,8 @@ workflow.json; its default path is the git top level of the product folder) and 
   python workflow_config.py lock-check [--installed FILE] [--json]
   python workflow_config.py lock-write [--installed FILE] [--plugin-json FILE]   write workflow.lock.json
   python workflow_config.py dispatch-check [--installed FILE]   pre-dispatch gate: lock mismatch 3, capability missing 5
-  python workflow_config.py doctor [--for CAP...] [--json]      declared vs measured capabilities
+  python workflow_config.py doctor [--for CAP...] [--json]      declared vs measured capabilities; warns about
+                                                                [FILL placeholders left and an unignored local file
   python workflow_config.py settings                            effective settings sources (SessionStart commands only)
   python workflow_config.py regen [--check]                     generate specflow.local.example.json from the policy
   python workflow_config.py repo-path REPO_ID                   this machine's local path of a repo
@@ -711,6 +712,27 @@ def local_file_warnings(root: Path) -> list[str]:
     return []
 
 
+def fill_warnings(policy: dict) -> list[str]:
+    """Doctor warning naming every key or string of workflow.json that still holds a template [FILL placeholder (the
+    unfilled template is valid JSON of the right shape, so validate passes it)."""
+    hits = []
+
+    def walk(v, where):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                p = f"{where}.{k}" if where else str(k)
+                if "[FILL" in str(k):
+                    hits.append(p)
+                walk(x, p)
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                walk(x, f"{where}[{i}]")
+        elif isinstance(v, str) and "[FILL" in v:
+            hits.append(where)
+    walk(policy, "")
+    return [f"{POLICY_NAME} still has [FILL] placeholders to replace: {', '.join(hits)}"] if hits else []
+
+
 # ---------- effective settings sources ----------
 
 SETTINGS_CANDIDATES = [
@@ -843,7 +865,7 @@ def cmd_doctor(a) -> int:
     policy = load_policy(policy_path(a.product))
     local = mapping_with_home(policy, load_local(local_file(a.product), policy), a.product)
     rep = doctor(policy, local)
-    rep.warnings += local_file_warnings(home_root(a.product))
+    rep.warnings += fill_warnings(policy) + local_file_warnings(home_root(a.product))
     if a.json:
         _print_json(rep.to_dict())
     else:

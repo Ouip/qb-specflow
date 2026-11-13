@@ -612,6 +612,20 @@ class TestDoctor(Tmp):
         _rc, text, _ = self.run_cli("doctor", "--product", spec, "--for", "spec_work")
         self.assertNotIn("warning", text)
 
+    def test_doctor_warns_about_unfilled_placeholders(self):
+        """The unfilled template passes validate; doctor still names every [FILL left (README: no [warning])."""
+        tpl = json.loads((SCRIPTS.parent / "templates" / "workflow.json").read_text(encoding="utf-8"))
+        proj, spec = self.make_product(pol=tpl)
+        (proj / ".gitignore").write_text("specflow.local.json\n", encoding="utf-8")
+        self.assertEqual(self.run_cli("validate", "--product", spec)[0], 0)
+        _rc, out, _ = self.run_cli("doctor", "--product", spec, "--json")
+        warn = json.loads(out)["warnings"]
+        self.assertEqual(len(warn), 1, warn)
+        for want in ("[FILL", "repos.[FILL: spec repo id]", "capabilities.dispatch.repos[0]", "handoff.file"):
+            self.assertIn(want, warn[0])
+        _rc, text, _ = self.run_cli("doctor", "--product", spec)
+        self.assertIn("[warning]", text)
+
     def test_doctor_does_not_warn_outside_git(self):
         _proj, spec = self.make_product(git=False)
         self.assertIsNone(wc.local_file_ignored(wc.home_root(spec)))
