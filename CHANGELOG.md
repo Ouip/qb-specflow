@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## Unreleased
+## 0.1.1 — 2026-11-15
 
 - Installation/setup: `/specflow:init` is a short entry point to `init-product`.
   Init now discovers existing settings before asking, generates local repo paths,
@@ -31,6 +31,7 @@
 
 ### Template changes
 
+- `specflow.md`: `core: 0.1.1`; `settings.project.json`: `ref` `v0.1.1`.
 - `spec.md`: section 1 prompts consumer/problem, success, scope and open decisions.
 - `reviews/g2.md`: add G2-12. `reviews/g5.md`: add G5-12/G5-13 and quality,
   advisory and simplification sections.
@@ -42,8 +43,9 @@
 ### Format changes
 
 None. Seven-section specs, rule IDs, existing gate IDs and findings JSON retain
-their format. These are unreleased workflow changes; plugin version pins and
-lock files are not bumped by this working-tree update.
+their format. Existing products update their plugin pin and `core:` to 0.1.1,
+then rerun `/specflow:init` to check the setup and refresh the lock after
+confirming the upgrade.
 
 ## 0.1.0 — 2026-11-13
 
