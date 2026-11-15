@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 0.1.3 — 2026-11-16
+
+- `couplings.py`: a spec section reference (`<ID> <section>`) is looked up in `<ID>-*.md`
+  anywhere under `--specs`, not only at its top level, so a spec folder can keep its
+  specs in subfolders.
+
 ## 0.1.2 — 2026-11-15
 
 - One review per dispatch: G5 runs once. After a send-back for G5 findings, G4 runs

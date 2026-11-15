@@ -7,7 +7,7 @@ Usage: python couplings.py <couplings.md> --specs <spec folder> [--code <code re
 Takes three kinds of reference from each data row's Side A and Side B cells
 (the headers `A 端` and `B 端` are also accepted):
 - Spec sections `<ID> <section>` (ID is 1-3 capital letters plus 2-3 digits, e.g. `X07 3.3`;
-  `X07 3.3/4.3` counts as two): a file in --specs named `<ID>-*.md` must have a heading starting with that number.
+  `X07 3.3/4.3` counts as two): a file named `<ID>-*.md` anywhere under --specs must have a heading starting with that number.
 - Symbols in backticks (e.g. `FRAME_W`; `*` is a wildcard): must appear verbatim in a --specs .md or a --code file.
 - Paths in backticks (containing `/`, or ending in .py .c .h .csv; a `file:line` suffix is ignored):
   must exist under a --code root; a bare file name matches any file of that name.
@@ -103,7 +103,7 @@ class Index:
 
     def has_section(self, code, num):
         head = re.compile(r"^#{1,6}\s+" + re.escape(num) + r"(?=\s|$)", re.M)
-        return any(head.search(p.read_text(encoding="utf-8", errors="ignore")) for p in self.specs.glob(f"{code}-*.md"))
+        return any(head.search(p.read_text(encoding="utf-8", errors="ignore")) for p in self.specs.rglob(f"{code}-*.md"))
 
 
 def rows(text):

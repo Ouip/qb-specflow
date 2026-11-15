@@ -29,6 +29,11 @@ class Couplings(unittest.TestCase):
         self.assertEqual(out, ["row 1: H01 4.9 not found"])
         self.assertEqual(rc, 1)
 
+    def test_b2_section_in_subfolder_found(self):
+        rc, out = run_cli("nested.md")
+        self.assertEqual(out, ["couplings: ok"])
+        self.assertEqual(rc, 0)
+
     def test_c_symbol_not_found(self):
         rc, out = run_cli("bad-symbol.md")
         self.assertEqual(out, ["row 1: NO_SUCH_SYM not found"])
