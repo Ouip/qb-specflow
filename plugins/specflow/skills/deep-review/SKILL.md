@@ -87,6 +87,8 @@ The report, in this order:
 5. **Rejected**: one line of reason each, kept so it is not reported again.
 6. **Coverage**: the `NOT_REVIEWED` and `INSUFFICIENT_EVIDENCE` lists with reasons, plus unresolved risks.
 
+For code reviews, append a five-axis quality summary (below) and a separate **Advisory** section for optional improvements. Cite a finding ID or source location rather than repeat the evidence. An advisory names the concrete readability/maintenance benefit and suggested move, or is marked as personal preference. Keep preferences out of the defect counts and findings JSON; an optional suggestion is not a `CONFIRMED` bug. If advisory work is deferred, reference its deferred-list row; the reviewer reports the proposed entry and the main session updates it.
+
 Next to the report, write the findings file (`<report name>.findings.json`, format in `${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py`) with one record per finding and the coverage lists, then run `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py <findings file> --root <reviewed folder>` (add `--no-git` for uncommitted code) and paste its output. It checks only that files, line ranges, quotes, the commit and execution records are traceable; it does not show that any finding is a real bug. Fix the findings file until it returns 0.
 
 ### Finding record
@@ -117,6 +119,18 @@ Done when: every stage-2 finding is in Confirmed, Needs verification or Rejected
 - **Low**: structure, style or project rules that do not affect behavior.
 
 ## Review dimensions
+
+For a code review, summarize all five axes as Assessed / N/A / Insufficient evidence, with locations or finding IDs and reasons. In a spec-only review, use the applicable dimensions without claiming code was inspected.
+
+| Axis | What to examine |
+|---|---|
+| Correctness | Rules, boundary cases, errors, tests and combinations already checked by the two tracks |
+| Readability and simplicity | Names and flow follow project conventions; abstractions remove concepts or duplication rather than move the same complexity; propose a specific restructuring and its benefit |
+| Architecture | Responsibilities stay in their owning layer; dependencies and contracts are explicit; reuse canonical helpers instead of parallel implementations |
+| Security | External inputs, trust boundaries, secrets, permissions and unsafe memory use, following actual product exposure |
+| Performance | Bounded work, allocation in hot paths, blocking, ISR constraints and product budgets; cite measurements for measured claims and label unmeasured risks |
+
+Severity describes impact; it does not decide whether a suggestion blocks. A verified rule or contract violation remains a violation even when Low. A concrete safety, security or correctness defect found on Track B needs no pre-existing spec rule. Personal preferences and optional improvements cannot block conforming code. A structural concern needs an example of its consequence and a proposed change; raw line counts and arbitrary abstraction quotas are not defects. Gate verdicts follow the relevant checklist; do not turn advisory advice into a new product requirement.
 
 Track B's list above, plus:
 

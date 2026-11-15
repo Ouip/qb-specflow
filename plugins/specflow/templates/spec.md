@@ -4,7 +4,7 @@
 
 ## 1 Purpose
 
-[FILL: one paragraph: what this component is responsible for, and what it is not]
+[FILL: who or what uses this component, the problem and intended outcome, observable success, what it owns and what is excluded. Reference approved decisions; name proposed assumptions and unresolved choices. Keep executable acceptance checks in section 6 and manual checks in 5.5.]
 
 ## 2 Dependencies
 

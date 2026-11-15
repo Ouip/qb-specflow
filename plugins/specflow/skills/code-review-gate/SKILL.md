@@ -19,14 +19,23 @@ The reviewer must not be whoever wrote this code. Read only; change nothing. Fol
    - Verification: the test named in the rule's Verify cell exists and fails when the rule is broken. With no test, judge from the code itself, write "no test" in Notes, and list it under G5-2. When the product keeps a verify map, run `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/behavior.py <spec> --map <verify map> --mutate --workdir <code repo> --allow <test programs…> --strict`, paste its output, and write each rule's status in this column. Without it, write `REFERENCE_ONLY` for a test you only found and `TEST_PASSED` for one you ran; never more.
    - Verdict: Conforms / Violates / N/A / Cannot judge from diff. Code that differs from the rule Violates; state severity separately.
 5. **Style table** (G5-6): one row per `AGENTS.md` rule tagged [G5], checked against full files. Keep it separate from the check table.
-6. **Checklist**: G5-1…G5-11 from `${CLAUDE_PLUGIN_ROOT}/gates/G5.md`, plus the product items in the gate-extension file; one row each.
-7. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g5.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/<id>-g5.md`, and mark the round. Any Violates row means Send back. Anything judged "not fixing now, next time" goes on the deferred list (G5-9). "Cannot judge from diff" rows go back to the main session.
+6. **Checklist**: G5-1…G5-13 from `${CLAUDE_PLUGIN_ROOT}/gates/G5.md`, plus the product items in the gate-extension file; one row each. Summarize deep-review's five axes and the simplification assessment below; reference existing findings instead of duplicating them.
+7. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g5.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/<id>-g5.md`, and mark the round. Any Violates row or Fail checklist item means Send back. A personal preference or optional improvement is Advisory, separate from severity and defect counts; it cannot override a violation or cause a Fail by itself. Anything judged "not fixing now, next time" goes on the deferred list (G5-9): the read-only reviewer proposes the entry and the main session writes it. "Cannot judge from diff" rows and unresolved blocking risks go back to the main session; no Pass until resolved.
+
+## Simplification assessment (G5-13)
+
+Assess recently changed code; **no useful simplification** is a valid result. Read its callers, tests and the reason for the current shape (history, comments, platform constraints) before proposing a change. Prefer removing unnecessary branches, duplicate policies or layers when it makes the code easier to follow; fewer lines alone is not a benefit.
+
+For each proposal, record location, before → after, concrete benefit, preserved behavior, checks needed and disposition (implementer / deferred / no change). Preserve inputs and outputs, side effects and their order, error semantics, storage/protocol compatibility, concurrency, timing, blocking and resource ownership. A host test pass alone cannot establish ISR or hardware-timing equivalence. If equivalence is uncertain, leave the code and state the evidence needed. For simplifications already applied in the diff, missing evidence of required behavior is a blocking risk to resolve, not an advisory escape.
+
+The reviewer changes no code. The main session hands accepted in-scope proposals to the implementer; after any edit, run G4 and G5 again on the updated revision with the same dispatch baseline. Do not edit frozen tests or contracts. Changed requirements go through `/specflow:change`; out-of-scope cleanup gets a separate dispatch or a deferred entry. Neither a simplification proposal nor an absence of proposals requires a new gate or approval round.
 
 ## Done when
 
 - The report's basis lists the impact-search commands and every hit file, each with the sections read or the reason it is out of scope.
 - Check-table rows = in-scope rules; the report states that number and how it was counted.
-- The check table and the style table are two tables; G5-1…G5-11 have one row each.
+- The check table and the style table are two tables; G5-1…G5-13 have one row each.
+- The report includes all five quality axes, separates Advisory items, and records the simplification assessment, including a no-change result when appropriate.
 - Every Violates row has a rule ID and a `file:line` you reopened in the file itself.
 - Reply: verdict, number of Violates rows, report path, rows handed back to the main session.
 
@@ -36,3 +45,5 @@ The reviewer must not be whoever wrote this code. Read only; change nothing. Fol
 | Listing the passing items is enough | Without a check table, nobody can see which rule was never reached |
 | Every row in 5.1 has a test, so the code follows the spec | Rules in section 4 that 5.1 does not list are reached only by the check table |
 | The code looks reasonable and the severity is low, so it conforms | Conformance is judged against the rule, not reasonableness. Write Violates; state severity separately |
+| My preferred naming would be cleaner, so send it back | A preference is Advisory; cite an actual violated rule or concrete defect to block |
+| Host tests pass, so this ISR refactor preserves behavior | Timing, blocking and ownership need their own evidence; keep unproven proposals out of the code |

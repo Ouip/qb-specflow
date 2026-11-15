@@ -13,13 +13,13 @@ The reviewer reads the spec and changes nothing. Follow the five stages of `spec
    - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/coverage.py <spec> --catalog <scenario catalogs from specflow.md…>`
    - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/couplings.py <couplings table> --specs <spec folder> --code <code repos from specflow.md…>`, plus `--values <value file> [--cpp <preprocessor>]` when the product keeps a value file
    A script that returns 1 makes its item Fail.
-4. **Item by item**: G2-1…G2-11 from `${CLAUDE_PLUGIN_ROOT}/gates/G2.md`, plus the product items in the gate-extension file. One row each: Pass / Fail / N/A (with a reason); notes cite `file:line`. For every couplings row, open the opposite spec and reread it; write "coupling #n checked" or state the mismatch.
+4. **Item by item**: G2-1…G2-12 from `${CLAUDE_PLUGIN_ROOT}/gates/G2.md`, plus the product items in the gate-extension file. One row each: Pass / Fail / N/A (with a reason); notes cite `file:line`. For every couplings row, open the opposite spec and reread it; write "coupling #n checked" or state the mismatch. G2-12 checks the definition in scope; a local edit does not reopen settled decisions or require unrelated purpose backfill.
 5. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g2.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/<id>-g2.md`. Mark the round.
 6. Verdict: any Fail means Send back. What the user must settle (`(new)` rules, changes involving a decision) gets its own section.
 
 ## Done when
 
-- The report has one row each for G2-1…G2-11 and every product item; rows G2-10 and G2-11 paste the script output.
+- The report has one row each for G2-1…G2-12 and every product item; rows G2-10 and G2-11 paste the script output.
 - Every Fail has a `file:line` or a section number.
 - Reply: verdict, number of Fail items, report path, what the user must settle.
 

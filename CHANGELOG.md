@@ -1,5 +1,50 @@
 # CHANGELOG
 
+## Unreleased
+
+- Installation/setup: `/specflow:init` is a short entry point to `init-product`.
+  Init now discovers existing settings before asking, generates local repo paths,
+  writes/checks the installed-plugin lock and runs validate/doctor itself instead
+  of returning a manual configuration checklist. It reports specification and
+  dispatch readiness separately and supports specs-only projects.
+- Re-init completes missing settings while preserving real choices, registries,
+  local mappings and other plugins; conflicting values require a focused question.
+  It adds the local-file ignore rule itself and refuses to write paths into an
+  already tracked mapping. No commits, pushes or publication happen during init.
+- README installation/setup is now install → init → answer → start; detailed
+  script interfaces remain in section 9. Existing `init-product` calls still work.
+
+- `spec-write`: conditional requirement discovery, explicit consumer/problem,
+  observable success and exclusions; compare open alternatives and decompose
+  independently testable capabilities using existing component IDs/dependencies.
+  Reuse settled decisions; no mandatory interview or invented quality thresholds.
+- G2-12 checks the definition in scope. Existing G2 identifiers keep their meaning.
+- `deep-review` and G5: five-axis quality summary; advisory preferences are separate
+  from defect severity/counts and do not block conforming changes. Verified rule,
+  contract and concrete correctness/safety/security violations remain blocking.
+- G5-13 assesses simplification with an explicit no-change outcome. Reviewers stay
+  read-only; accepted proposals go to the implementer and edits require fresh G4
+  and G5. Required behavior includes errors, ordering, compatibility, concurrency,
+  timing and ownership; passing host tests alone is insufficient for hardware claims.
+- Define/Review concepts selected from addyosmani/agent-skills, rewritten for
+  Specflow; no new dependency, gate stage, script interface or findings-JSON schema.
+
+### Template changes
+
+- `spec.md`: section 1 prompts consumer/problem, success, scope and open decisions.
+- `reviews/g2.md`: add G2-12. `reviews/g5.md`: add G5-12/G5-13 and quality,
+  advisory and simplification sections.
+- When adopting this change, merge these additions into product-owned copies;
+  preserve product items and completed historical reports. For a local spec edit,
+  G2-12 only assesses the impacted definition; unrelated legacy purpose text does
+  not require backfill. New reviews use the expanded checklist/report together.
+
+### Format changes
+
+None. Seven-section specs, rule IDs, existing gate IDs and findings JSON retain
+their format. These are unreleased workflow changes; plugin version pins and
+lock files are not bumped by this working-tree update.
+
 ## 0.1.0 — 2026-11-13
 
 From a product (2026-11-13): its workflow fixes were product scripts: a handoff checked between machines, component status changed only by rule, a gate before a dispatch, success judged only from evidence. Their generic parts move into the core, so any product gets them through its own settings; the product keeps only its settings and, if it has its own commands, a thin adapter.

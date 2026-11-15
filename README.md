@@ -14,6 +14,19 @@ Three mechanisms:
 
 Four gates (checklists in `gates/`): G2 spec review, G-T test review, G4 machine acceptance, G5 code review.
 
+Before drafting, `spec-write` defines the consumer/problem, observable success,
+scope and open decisions. It asks only material unanswered questions; settled
+requests proceed directly. Requests spanning independently testable capabilities
+get component responsibilities and dependency order, using the existing registry.
+G2-12 checks the definition in scope without reopening unrelated legacy sections.
+
+G5 also records five quality axes (correctness, readability/simplicity,
+architecture, security and performance) and a simplification assessment. Optional
+advice cannot block conforming work; rule/contract violations and concrete defects
+still block. A reviewer proposes simplifications read-only, including "no useful
+simplification" when appropriate. An implementer edit needs fresh G4 and G5;
+host tests alone do not prove timing, ISR or resource-ownership equivalence.
+
 ```
 discuss → decide → write spec → G2 → scenarios first → G-T → prepare workspace → implement → G4 → G5 → close out → on-device and manual
                    spec-write   spec-review  tests-first  tests-review  [------------ dispatch ------------]      accept
@@ -21,11 +34,12 @@ discuss → decide → write spec → G2 → scenarios first → G-T → prepare
 any time: change (a decision changed)    now and then: retro (something a gate let through)
 ```
 
-Thirteen skills:
+Fourteen skills:
 
 | Skill | When |
 |---|---|
-| `init-product` | A product joins the workflow for the first time |
+| `init` | Interactive setup: detect, ask, configure and verify; resumes incomplete setup |
+| `init-product` | The same setup workflow; original command remains supported |
 | `spec-write` | Writing or changing a component spec |
 | `spec-review` | Spec review (G2) |
 | `tests-first` | Before a dispatch: write the integration / end-to-end scenarios that become complete with it |
@@ -41,44 +55,51 @@ Thirteen skills:
 
 ## 2. Install
 
-1. Add the marketplaces this plugin depends on, then this one, and install it:
-   ```
-   claude plugin marketplace add anthropics/claude-plugins-official
-   claude plugin marketplace add forrestchang/andrej-karpathy-skills
-   claude plugin marketplace add Ouip/qb-specflow
-   claude plugin install specflow@specflow
-   ```
-2. Write the product repo's `.claude/settings.json` from `templates/settings.project.json` (`/specflow:init-product` generates it); `ref` pins a tag. Trust the folder when Claude Code asks.
-3. `claude plugin list` shows `specflow@specflow` as enabled.
+In Claude Code, run once:
 
-## 3. Set up a product (a new project joins)
+```text
+/plugin marketplace add anthropics/claude-plugins-official
+/plugin marketplace add forrestchang/andrej-karpathy-skills
+/plugin marketplace add Ouip/qb-specflow
+/plugin install specflow@specflow
+```
 
-The spec repo is the git repo that holds the spec folder (the folder with `specflow.md`); the core scripts call it the home repo. Below, `<python>` is the `python:` header line of `specflow.md` and `<scripts>` is the installed plugin's `scripts` folder: `${CLAUDE_PLUGIN_ROOT}/scripts` inside a session, otherwise the `installPath` of `specflow@specflow` in `~/.claude/plugins/installed_plugins.json` plus `/scripts`.
+Then open your project and run:
 
-1. Install the plugin (section 2).
-2. In the spec repo, run `/specflow:init-product`. It creates `specflow.md`, `workflow.json`, `components.json`, the other templates, `.claude/settings.json`, and a `.gitignore` holding `specflow.local.json` when there is none (otherwise it prints that line for you to add). It never overwrites an existing file.
-3. Fill the settings:
-   - every `[FILL]` in `specflow.md`, including `Language` (the language for reports, the handoff file and replies);
-   - `workflow.json`: `repos` (the spec repo has `"home": true`; one entry per code repo), `handoff.file` (relative to the spec repo root), and the `tools` and `capabilities` the product needs. Keep `spec_work`: `handoff.py verify` checks it by default;
-   - `components.json`: `states` as in "Component states" of `specflow.md`, `repos` as the code repos. Once a component's spec exists, add it with `<python> <scripts>/registry.py --product <spec folder> add <id> --name <name> --spec <spec file> --repo <repo id>`;
-   - the product's gate items in `gates-ext.md`.
+```text
+/specflow:init
+```
 
-   Use the same repo ids in `workflow.json`, `components.json` and `specflow.local.json`. Optional `workflow.json` blocks, formats in each script's docstring: `transitions` and `evidence_kinds` (status rules and the evidence each step needs; `registry.py`), `dispatch.implementer` and `dispatch.report` (an implementer tool run by `dispatch_run.py`, with a report schema in the spec folder), `handoff.task_notes`, `handoff.local_only`, `resources`, `roles`, `test_profiles`.
-4. This machine's paths: `<python> <scripts>/workflow_config.py --product <spec folder> regen` writes `specflow.local.example.json` at the spec repo root (commit it). Copy it to `specflow.local.json` next to it and set each repo's absolute path on this machine; `machine` is an optional label. `specflow.local.json` is never committed: each machine, and each worktree of the spec repo, has its own.
-5. Pin the plugin: `<python> <scripts>/workflow_config.py --product <spec folder> lock-write` writes `workflow.lock.json` (run it from the installed copy, not a clone). Commit it with `specflow.md`; `core:` must equal the lock's core version.
-6. Check: `workflow_config.py --product <spec folder> validate` and `doctor` return 0, and `doctor` prints no `[warning]`.
-7. First handoff: `/specflow:wrapup` exports, commits and pushes the handoff; it says "published" only when `verify --fetch` reports `published: true`. On another machine, with its own `specflow.local.json`, `/specflow:pickup` reports the level; only `resumable` means the work can resume there.
-8. Write the first spec with `/specflow:spec-write`.
+Init detects the project, proposes settings, asks only for missing decisions,
+creates the configuration and runs its checks. You do not need to edit JSON,
+copy a local path file, or run lock/doctor commands yourself. Existing users can
+still use `/specflow:init-product`; both names run the same setup.
 
-What the tools rely on:
+## 3. Setup: answer init, then start
 
-- `handoff.local_only` prefixes apply in every repo, and a reference under one counts as missing for another machine (it fails closed). List only paths that no repo tracks.
-- A reference that stays on this machine on purpose is directly followed by the mark `local only` or `僅本機` (section 6).
-- Handoff levels: the scripts' JSON says `local` (export), `published` or `resumable` (`verify --fetch`); the skills report them in the product's language (e.g. 繁體中文 本地保存／已發布／可接手). Only `published: true` from `verify --fetch` is "published"; only `resumable` is "can resume".
-- `components.json` changes only through `registry.py`. After a rework, the next forward step needs new evidence at a new path: the core checks that a file exists and that its sha256 matches, not that it is new. Evidence of a human kind (`"human": true`, e.g. manual acceptance) is written by a person and only referenced afterwards; no model writes or fills it in.
-- `dispatch_run.py`: trust `result.json` only together with the run's exit code. G4 runs in the worktree `result.json` names, against the run's start SHA. Nothing merges `run/<run id>` or removes its worktree automatically; a person does.
+1. Confirm or correct the detected project, spec location and code repos.
+2. Answer any remaining questions about framework, tests and product rules.
+   A specs-only project can start now; hardware and test decisions needed later
+   are recorded as pending.
+3. Init reports whether specifications can begin, whether dispatch is ready,
+   and any specific blocker. Start with `/specflow:spec-write` when ready.
 
-Without `workflow.json`, every skill works as in 0.0.3. A product that does not want the tools leaves out `workflow.json` and `components.json`.
+Re-run `/specflow:init` to finish an interrupted setup or configure another
+machine's paths. It preserves existing choices, component states and local
+mappings, merges its settings without replacing other plugins, and asks about
+conflicts. It does not commit, push or publish your project.
+
+The generated `specflow.md` holds product rules; `workflow.json` holds repo and
+capability policy; `components.json` holds component state. Each machine's
+absolute paths live only in the ignored `specflow.local.json`; the portable
+example and `workflow.lock.json` can be versioned. Technical commands and their
+limits are in section 9; they are run by init during ordinary setup.
+
+Setup readiness is not test acceptance or a published handoff. To transfer work,
+use `/specflow:wrapup`; another machine uses `/specflow:init` for its local mapping
+and `/specflow:pickup` to verify the handoff. Only the reported `resumable` level
+means that referenced work can resume there. Missing tools or plugin locks are
+reported as blockers, never bypassed or claimed as passing.
 
 ## 4. Tune
 
@@ -148,6 +169,14 @@ What stays as is: every skill's steps, the check-table format, the couplings col
 | `handoff.py --product <spec folder> new-id / export / verify / report` | the handoff level (`local` from export; `published` or `resumable` from `verify --fetch`) and every missing, stale or pending item; refuses a handoff file over 5120 bytes or one with a suspected secret | that the handed-off work is right; anything not referenced from the handoff file or the selected task notes |
 | `dispatch_run.py --product <spec folder> check / run / cancel` | the gate result; one run's verdict from its own evidence (report against the schema, changed files against `--allow`/`--frozen`, the process tree stopped) in `result.json` and the exit code | that the code is right (G4 and G5 decide); ignored files and writes outside the worktree; it never merges a branch or removes a worktree |
 | `state_io.py`, `process_runner.py` (used by the scripts above; no command line) | locks, revisions and atomic writes under `<git common dir>/specflow-runtime/`; claims held until a process tree is confirmed stopped; timeout and cancel stop the whole tree | anything across machines (a local lock cannot stop another machine); a process started inside WSL that detaches itself |
+
+Operational requirements: `handoff.local_only` prefixes apply to every repo;
+list only paths no repo tracks. Component changes go through `registry.py`;
+after rework, use a new evidence file at a new path (hash checks do not establish
+freshness). Evidence declared human-written is produced by a person, never filled
+in by a model. Trust a dispatch's `result.json` only with its process exit code;
+G4 uses that run's worktree and recorded start SHA. A person merges its run branch
+and removes its worktree; setup and dispatch do neither automatically.
 
 File formats are in each script's docstring. Nothing runs a command from a map or value file unless the command line says so (`--run`, `--mutate`, `--allow`, `--cpp`). `doctor`, `dispatch-check` and `dispatch_run.py run` run the tools `workflow.json` names (version probes; the implementer). Exit codes of the workflow scripts: 0 pass, 1 refused or unexpected, 2 input or schema, 3 conflict or mismatch, 4 missing, 5 capability missing, 6 timeout.
 
