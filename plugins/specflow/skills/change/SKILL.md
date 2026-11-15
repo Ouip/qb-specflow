@@ -18,7 +18,7 @@ The impact list is this change's work list: nothing off the list changes, and ev
    Rows judged "not affected" stay on the list, with the reason as the result. Under the list, paste `couplings.py`'s output and return code verbatim (command under "Done when"; it only reads, so run it even when changing no files).
 4. **Show the user the list**. Anything involving a decision (a new value, how a variant binds, a controller model) becomes a question; wait for the answer.
 5. **Change in one batch**: spec sections, contracts (released per the contract change rules in `specflow.md`), scenario catalogs, couplings table (new couplings get rows; rows checked on both sides get this decision ID as "Last checked"). Fill each row's result as you finish it.
-6. **Review only the changed sections**: `/specflow:spec-review`, scope = the sections on the impact list.
+6. **Review**: a change to a frozen contract or protocol gets `/specflow:spec-review`, scope = the sections on the impact list. Any other change gets the `spec-write` self-check only; the next G5 of each affected component checks the changed rules against its code.
 7. **Code**: affected merged code gets a fix dispatch through `/specflow:dispatch`, or a deferred-list row saying when it will be handled.
 
 ## Done when
@@ -27,7 +27,7 @@ The impact list is this change's work list: nothing off the list changes, and ev
 - For each couplings-table row from 3b, every line `couplings.py --list` printed for it appears in the Location column.
 - The consistency lint in `specflow.md` returns 0 (if it says "none", write "none").
 - `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/couplings.py <couplings table> --specs <spec folder> --code <code repos…>` returns 0.
-- The step-6 G2 report says Pass.
+- For a change to a frozen contract or protocol: the step-6 G2 report says Pass.
 - The decisions table has this entry.
 
 Missing any one means not done: the handoff file says which step it stopped at.

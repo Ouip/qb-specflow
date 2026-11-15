@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 0.1.2 — 2026-11-15
+
+- One review per dispatch: G5 runs once. After a send-back for G5 findings, G4 runs
+  as usual and the main session does a fix check (one row per sent-back finding in
+  the G5 report) instead of a second G5 (`dispatch`, `accept`, `code-review-gate`,
+  G5, G5 template).
+- G2 runs as a separate review only for a change to a frozen contract or protocol,
+  or when the user asks; every other spec gets the `spec-write` self-check (G2
+  items, `coverage.py`, `couplings.py`). `change` step 6 follows the same rule.
+- G-T runs only when the user asks; `tests-first` checks GT-1…GT-4 itself before
+  committing.
+- G5-14: problems in the spec itself become "spec doubt" findings, handed back for
+  `/specflow:change`; they do not send the code back by themselves.
+
 ## 0.1.1 — 2026-11-15
 
 - Installation/setup: `/specflow:init` is a short entry point to `init-product`.

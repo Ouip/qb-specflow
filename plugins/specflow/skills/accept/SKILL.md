@@ -16,7 +16,7 @@ The report is only a lead. The verdict rests only on return values and diffs you
    - G4-3: `git diff <prep commit>..HEAD -- <contract paths>` is empty, and the files are byte-identical to spec section 3.
    - G4-4: each claim in the report is checked against the measurements above; `done` with unmet items is a Fail.
    - G4-5: repos or files outside the workspace: `git status --porcelain` matches the record from before dispatch.
-4. **Verdict**: all Pass → go to G5 (`/specflow:code-review-gate`). Any Fail → send back, handing the failing commands and output to stage 3 of `/specflow:dispatch`.
+4. **Verdict**: all Pass → go to G5 (`/specflow:code-review-gate`); after a send-back for G5 findings, go to the fix check in stage 3 of `/specflow:dispatch` instead (G5 runs once per dispatch). Any Fail → send back, handing the failing commands and output to stage 3 of `/specflow:dispatch`.
 5. **On-device stage** (when a real board or fixture is needed): run the end-to-end command in `specflow.md`; the manual checklist follows spec 5.5. Record results in the manual acceptance record (template `${CLAUDE_PLUGIN_ROOT}/templates/manual-acceptance.md`). When something goes red, use `mattpocock-skills:diagnosing-bugs`.
    A record used as evidence of a human kind (`"human": true` in `evidence_kinds` of `workflow.json`) is written by a person: never write or fill in its results yourself; reference it (`registry.py set … --evidence`) only after the person produced it.
 

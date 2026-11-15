@@ -7,7 +7,7 @@ description: Use when the user wants a component built, dispatched or re-dispatc
 
 Four stages; check each stage's exit before the next. The main session does not write the component's code; the implementer named in `specflow.md` does.
 
-**Before starting**: read `specflow.md` in the product's spec folder (missing, or no `format: 2` in its header → stop and ask the user to run `/specflow:init-product` first). This spec's G2 report says Pass; the integration scenarios this dispatch activates have passed G-T (`/specflow:tests-first`). If anything is missing, fill it in first; do not dispatch. With a `workflow.json` in the spec folder, `<python> "${CLAUDE_PLUGIN_ROOT}/scripts/workflow_config.py" --product <spec folder> dispatch-check` must return 0 (`<python>`: the `python:` header line of `specflow.md`); otherwise stop and paste its output.
+**Before starting**: read `specflow.md` in the product's spec folder (missing, or no `format: 2` in its header → stop and ask the user to run `/specflow:init-product` first). This spec passed the `spec-write` self-check (a change to a frozen contract or protocol also has a G2 Pass); the integration scenarios this dispatch activates are on main and frozen (`/specflow:tests-first`). If anything is missing, fill it in first; do not dispatch. With a `workflow.json` in the spec folder, `<python> "${CLAUDE_PLUGIN_ROOT}/scripts/workflow_config.py" --product <spec folder> dispatch-check` must return 0 (`<python>`: the `python:` header line of `specflow.md`); otherwise stop and paste its output.
 
 ## Stage 1: Prepare the workspace
 
@@ -31,7 +31,7 @@ Per "Implementer" in `specflow.md`:
 
 ## Stage 3: Send back
 
-G4 or G5 fails → append the failing commands, output and review findings to the end of the next prompt (not to the spec) and run stage 2 again:
+G4 fails, or G5 sends back → append the failing commands, output and review findings to the end of the next prompt (not to the spec) and run stage 2 again:
 
 ```
 The previous attempt did not pass (attempt n, limit 3). Why:
@@ -41,11 +41,13 @@ The previous attempt did not pass (attempt n, limit 3). Why:
 - **If attempt 3 still fails, stop and ask the user**: usually the spec is wrong.
 - The fault is in another, already-merged component (a newly active scenario goes red and, per the spec, the other side violates it) → pause this dispatch (it does not count as an attempt), move the other component back to "In progress" and open its fix dispatch; after it merges, resume here from G4. If you cannot tell whose fault it is → ask the user.
 
+- **G5 runs once per dispatch.** After a send-back for G5 findings: G4 (`/specflow:accept`) as usual, then the fix check instead of a second G5. The main session reads the fix diff and appends a "Fix check" section to the G5 report: one row per sent-back finding (finding ID, fix `file:line`, resolved / not resolved). A finding not resolved is sent back again; a fix that changes behavior beyond its finding goes back to the user.
+
 **Exit**: n ≤ 3, and each attempt's reason is in the handoff file.
 
 ## Stage 4: Close out
 
-Only when G4 and G5 (`/specflow:code-review-gate`) both pass:
+Only when G4 passes and G5 (`/specflow:code-review-gate`) passed, or its fix check shows every sent-back finding resolved:
 
 1. Merge to main; add the component to the done list (the path the scenario catalog names) in the same commit as the merge. For a `dispatch_run.py` run, the work is on branch `run/<run id>` in the worktree `result.json` names. Nothing merges or removes them automatically: ask the user before merging that branch, and leave removing the worktree to the user.
 2. Write the newly frozen contracts back into spec section 3 in full.
@@ -66,4 +68,5 @@ Only when G4 and G5 (`/specflow:code-review-gate`) both pass:
 | `specflow.md` does not list the stages, so infer them from the spec | The stages are on this card; `specflow.md` supplies only commands and names |
 | Sending back means asking the implementer to try again | Attach the failing output and record the attempt number; stop at attempt 3 |
 | `result.json` says `done`, so the run passed | Only together with that run's exit code 0; then `/specflow:accept` still decides |
+| The fix touched code, so run G5 again | G5 runs once per dispatch; G4 plus the fix check against each sent-back finding decides |
 | Editing `components.json` by hand is quicker | Only `registry.py` changes it: it checks the rule and the evidence under a lock |

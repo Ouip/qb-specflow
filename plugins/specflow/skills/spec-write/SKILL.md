@@ -45,8 +45,9 @@ Rules are written one of two ways only: a table with a `#` column, or a numbered
 
 ## Done when
 
-- `coverage.py` returns 0; the product lint returns 0; every line of section 6 is a command.
-- Reply to the user: which sections changed, how many rules, what the user must decide, new couplings rows. Next step: `/specflow:spec-review`.
+- `coverage.py` returns 0; the product lint returns 0; `couplings.py` returns 0 (command in `/specflow:change`); every line of section 6 is a command.
+- Self-check: go through the items of `${CLAUDE_PLUGIN_ROOT}/gates/G2.md` and the product's G2 items in the gate-extension file yourself; fix what fails. This is the review for every spec change except a change to a frozen contract or protocol, which also needs `/specflow:spec-review`.
+- Reply to the user: which sections changed, how many rules, what the user must decide, new couplings rows. Next step: a change to a frozen contract or protocol → `/specflow:spec-review`; otherwise `/specflow:tests-first` or `/specflow:dispatch`.
 - Section 1 makes the outcome and scope concrete; assumptions and unresolved decisions are visible. For a local edit, reuse the existing definition rather than rewriting unrelated sections.
 
 | Excuse | Reality |

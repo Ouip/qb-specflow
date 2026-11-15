@@ -1,4 +1,6 @@
-# G-T test review (integration and end-to-end scenarios; never whoever wrote the test)
+# G-T test review (integration and end-to-end scenarios)
+
+Runs as a separate review only when the user asks. Otherwise the writer checks these items before committing (`/specflow:tests-first`).
 
 Generic items. Product items (e.g. which outputs end-to-end tests can observe) are in the gate-extension file named in `specflow.md`.
 

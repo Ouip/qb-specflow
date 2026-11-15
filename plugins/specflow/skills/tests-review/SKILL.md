@@ -1,6 +1,6 @@
 ---
 name: tests-review
-description: Use when dispatched as the test reviewer (G-T), or when integration or end-to-end scenario code is written and needs review (「測試審」).
+description: Use when dispatched as the test reviewer (G-T), or when the user asks for integration or end-to-end scenario code to be reviewed (「測試審」).
 ---
 
 # Test review (G-T)

@@ -1,6 +1,6 @@
 ---
 name: spec-review
-description: Use when doing a spec review (G2), when dispatched as the G2 reviewer, or when a changed spec needs its changed sections reviewed again (「規格審」「重審規格」).
+description: Use when a change to a frozen contract or protocol needs its spec review (G2), when dispatched as the G2 reviewer, or when the user asks for a spec review (「規格審」「重審規格」).
 ---
 
 # Spec review (G2)
