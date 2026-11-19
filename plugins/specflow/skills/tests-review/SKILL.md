@@ -10,10 +10,10 @@ The reviewer must not be whoever wrote this test. Read only; change nothing.
 1. Read `specflow.md` in the product's spec folder. Missing, or no `format: 2` in its header → stop and ask the user to run `/specflow:init-product` first.
 2. **Scope**: this scenario's code. **Basis**: its catalog row, the participants' contracts, the G-T items in the gate-extension file.
 3. **Item by item**: GT-1…GT-4 from `${CLAUDE_PLUGIN_ROOT}/gates/GT.md` plus the product items, one row each, notes citing `file:line`. GT-1 maps each item of "Expected" to an assertion; GT-2 runs this scenario alone once and records the return value.
-4. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/gt.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/T-<ID>-gt.md`; mark the round.
+4. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/gt.md` and mark the round. The report is the reply itself; write it to a file only when a report path was given.
 5. **Verdict**: any Fail means Send back. Faults in the catalog or the spec itself go in a separate section for the main session to take to the user.
 
-Done when: one row each for GT-1…GT-4; every "Expected" item maps to an assertion or says "no assertion"; the reply gives the verdict and the report path.
+Done when: one row each for GT-1…GT-4; every "Expected" item maps to an assertion or says "no assertion"; the reply is the whole report and gives the verdict.
 
 | Excuse | Reality |
 |---|---|

@@ -41,7 +41,7 @@ The previous attempt did not pass (attempt n, limit 3). Why:
 - **If attempt 3 still fails, stop and ask the user**: usually the spec is wrong.
 - The fault is in another, already-merged component (a newly active scenario goes red and, per the spec, the other side violates it) → pause this dispatch (it does not count as an attempt), move the other component back to "In progress" and open its fix dispatch; after it merges, resume here from G4. If you cannot tell whose fault it is → ask the user.
 
-- **G5 runs once per dispatch.** After a send-back for G5 findings: G4 (`/specflow:accept`) as usual, then the fix check instead of a second G5. The main session reads the fix diff and appends a "Fix check" section to the G5 report: one row per sent-back finding (finding ID, fix `file:line`, resolved / not resolved). A finding not resolved is sent back again; a fix that changes behavior beyond its finding goes back to the user.
+- **G5 runs once per dispatch.** After a send-back for G5 findings: G4 (`/specflow:accept`) as usual, then the fix check instead of a second G5. The main session reads the fix diff and writes a "Fix check" (appended to the G5 report when it is a file, otherwise in the handoff file): one row per sent-back finding (finding ID, fix `file:line`, resolved / not resolved). A finding not resolved is sent back again; a fix that changes behavior beyond its finding goes back to the user.
 
 **Exit**: n ≤ 3, and each attempt's reason is in the handoff file.
 

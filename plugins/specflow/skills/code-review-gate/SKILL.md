@@ -20,7 +20,7 @@ The reviewer must not be whoever wrote this code. Read only; change nothing. G5 
    - Verdict: Conforms / Violates / N/A / Cannot judge from diff. Code that differs from the rule Violates; state severity separately.
 5. **Style table** (G5-6): one row per `AGENTS.md` rule tagged [G5], checked against full files. Keep it separate from the check table.
 6. **Checklist**: G5-1…G5-14 from `${CLAUDE_PLUGIN_ROOT}/gates/G5.md`, plus the product items in the gate-extension file; one row each. Summarize deep-review's five axes and the simplification assessment below; reference existing findings instead of duplicating them.
-7. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g5.md`; use the path the user gave, otherwise `<code repo>/docs/reviews/<id>-g5.md`, and mark the round. Any Violates row or Fail checklist item means Send back. A personal preference or optional improvement is Advisory, separate from severity and defect counts; it cannot override a violation or cause a Fail by itself. Anything judged "not fixing now, next time" goes on the deferred list (G5-9): the read-only reviewer proposes the entry and the main session writes it. "Cannot judge from diff" rows and unresolved blocking risks go back to the main session; no Pass until resolved.
+7. **Report**: follow `${CLAUDE_PLUGIN_ROOT}/templates/reviews/g5.md` and mark the round. The report is the reply itself; write it to a file only when a report path was given. Any Violates row or Fail checklist item means Send back. A personal preference or optional improvement is Advisory, separate from severity and defect counts; it cannot override a violation or cause a Fail by itself. Anything judged "not fixing now, next time" goes on the deferred list (G5-9): the read-only reviewer proposes the entry and the main session writes it. "Cannot judge from diff" rows and unresolved blocking risks go back to the main session; no Pass until resolved.
 
 ## Simplification assessment (G5-13)
 
@@ -37,7 +37,7 @@ The reviewer changes no code. The main session hands accepted in-scope proposals
 - The check table and the style table are two tables; G5-1…G5-14 have one row each.
 - The report includes all five quality axes, separates Advisory items, and records the simplification assessment, including a no-change result when appropriate.
 - Every Violates row has a rule ID and a `file:line` you reopened in the file itself.
-- Reply: verdict, number of Violates rows, report path, rows handed back to the main session.
+- Reply: the whole report, then the verdict, number of Violates rows and rows handed back to the main session.
 
 | Excuse | Reality |
 |---|---|

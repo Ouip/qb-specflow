@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.1.4 — 2026-11-19
+
+- Gate reviews write no report file by default: the report (every table included) is
+  the reviewer's reply to the main session, and goes to a file only when a report path
+  was given. The default `<code repo>/docs/reviews/` paths are gone (`spec-review`,
+  `tests-review`, `code-review-gate`, `deep-review`); the fix check goes in the
+  handoff file when there is no G5 report file (`dispatch`).
+
 ## 0.1.3 — 2026-11-16
 
 - `couplings.py`: a spec section reference (`<ID> <section>`) is looked up in `<ID>-*.md`

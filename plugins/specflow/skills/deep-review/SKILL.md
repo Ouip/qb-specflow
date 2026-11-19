@@ -78,7 +78,7 @@ Done when: every gap is `REVIEWED`, `NOT_REVIEWED` with the reason, or `INSUFFIC
 
 ## Stage 5: Report
 
-The report, in this order:
+The report is the reply itself, written to a file only when a report path was given. In this order:
 
 1. One-sentence conclusion: how many in each class, and the most severe one. State `single_context` or `independent_subagents`.
 2. Scope and basis: what was reviewed, the commit, and which version of the basis.
@@ -89,7 +89,7 @@ The report, in this order:
 
 For code reviews, append a five-axis quality summary (below) and a separate **Advisory** section for optional improvements. Cite a finding ID or source location rather than repeat the evidence. An advisory names the concrete readability/maintenance benefit and suggested move, or is marked as personal preference. Keep preferences out of the defect counts and findings JSON; an optional suggestion is not a `CONFIRMED` bug. If advisory work is deferred, reference its deferred-list row; the reviewer reports the proposed entry and the main session updates it.
 
-Next to the report, write the findings file (`<report name>.findings.json`, format in `${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py`) with one record per finding and the coverage lists, then run `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py <findings file> --root <reviewed folder>` (add `--no-git` for uncommitted code) and paste its output. It checks only that files, line ranges, quotes, the commit and execution records are traceable; it does not show that any finding is a real bug. Fix the findings file until it returns 0.
+Write the findings file (`<report name>.findings.json` next to a report file, otherwise in a temporary folder outside the repo; format in `${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py`) with one record per finding and the coverage lists, then run `<python> ${CLAUDE_PLUGIN_ROOT}/scripts/review_report.py <findings file> --root <reviewed folder>` (add `--no-git` for uncommitted code) and paste its output. It checks only that files, line ranges, quotes, the commit and execution records are traceable; it does not show that any finding is a real bug. Fix the findings file until it returns 0.
 
 ### Finding record
 
