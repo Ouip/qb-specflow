@@ -16,7 +16,7 @@ When the spec folder has a `workflow.json` with a `"handoff"` block, steps 3–5
    - Open items in suggested order, one plain-words line each (what gets done, who does it) plus a link to where its details live: a spec section, the deferred list, a review record, or a detail file next to the handoff. Delete a detail file when its item is done.
    - Carry every open item of the old handoff, from all its sections, before overwriting it.
    - At most 5120 bytes. Over → move details into linked files; every open item keeps its line.
-4. Commit only your own paths (the handoff file counts) with `git commit -- <paths…>`; others' staged files stay staged. Never `git add -A`, `git add .` or `git commit -a`.
+4. Commit only your own paths (the handoff file counts) with `git commit -- <paths…>`, which commits each path's whole working-tree file: a new file needs `git add -- <path>` first, and a file that also holds another session's changes follows the product's partial-commit rule and is not named here; others' staged files stay staged. Never `git add -A`, `git add .` or `git commit -a`.
 5. Push every branch with new commits. Rejected → no rebase, no force; stop and paste the rejected output.
 6. "Extra steps" wrap-up in `specflow.md`: "none" → skip; a skill → invoke it; not found → write "skipped, `/x:y` not found".
 7. After `git fetch`, run `git status -sb` in each repo.
@@ -44,7 +44,7 @@ Then steps 6 and 7. Level words, in the product's language: `local` = saved loca
 ## Done when
 
 - Step 7's output is pasted verbatim in the reply; no repo is ahead or behind.
-- `wc -c <handoff file>` is pasted in the reply and shows at most 5120.
+- `wc -c <handoff file>` (PowerShell: `(Get-Item <handoff file>).Length`) is pasted in the reply and shows at most 5120.
 - Other sessions' files are listed in the reply, in the same state as before the wrap-up.
 - If something cannot be done, say which step it stopped at.
 - With a handoff block: the reply gives the handoff ID and the level, both from the script JSON only: "published" only after `published: true` in h; "saved locally" with every missing entry when the export gave `local`.

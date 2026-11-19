@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## 0.1.5 — 2026-11-19
+
+- `wrapup`: `git commit -- <paths…>` commits each path's whole working-tree file, so a
+  new file needs `git add -- <path>` first and a file that also holds another session's
+  changes follows the product's partial-commit rule instead; the handoff size check
+  gives the PowerShell form.
+- `dispatch`: the sub-agent prompt no longer names a Claude skill the implementer
+  cannot load; it says to change only what the spec needs.
+- `accept`: the G4 table has an Output column, as G4 requires an output location per
+  command.
+- `templates/specflow.md`: `core:` follows the release.
+
 ## 0.1.4 — 2026-11-19
 
 - Gate reviews write no report file by default: the report (every table included) is
