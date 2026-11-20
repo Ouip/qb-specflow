@@ -638,6 +638,10 @@ class TestExport(World):
         app = next(r for r in self.manifest_of("A", out["handoff_id"]).repos if r["repo_id"] == "app")
         self.assertEqual((app["ref"], app["commit_sha"]), ("task/a1", wip))
         self.assertEqual(head(f), master)  # the main checkout did not switch
+        code, r = self.cli("A", "report", "--task", "A1")  # the main checkout has no src/brew.c
+        self.assertIn("app:src/brew.c", items(r["missing"]))
+        code, r = self.cli("A", "report", "--task", "A1", "--ref", "app=task/a1")
+        self.assertNotIn("app:src/brew.c", items(r["missing"]))
         self.clone_b()
         code, b = self.cli("B", "verify", "--fetch")
         self.assertEqual(code, 0, b)
@@ -1024,7 +1028,7 @@ class TestVerifyScenarios(World):
         self.assertIn("app:docs/reviews/A1-run.md", miss)
         self.assertIn("A1-g2.md", miss)
         self.assertIn("app:docs/none.md", miss)
-        self.assertTrue(any(x.startswith("app@") for x in miss))
+        self.assertEqual(sum(x.startswith("app@") for x in miss), 1)  # pending unpushed and not on B: one entry
 
     def test_two_machines_need_their_own_mapping(self):
         code, out = self.wrapup()
@@ -1218,6 +1222,28 @@ class TestReportOnly(World):
         code, out = self.cli("A", "report", "--task", "A1", "--fetch")
         self.assertEqual(code, 4)
         self.assertIn(f"spec@{head(h)[:12]}", items(out["missing"]))
+
+    def test_report_index_reads_staged_notes(self):
+        h = self.A["spec"]
+        self.set_notes("- `gone/x.md`")
+        git(h, "add", "--", self.note("A1"))
+        code, out = self.cli("A", "report", "--task", "A1", "--index")
+        self.assertEqual(code, 4)
+        self.assertIn("spec:gone/x.md", items(out["missing"]))
+        code, out = self.cli("A", "report", "--task", "A1")  # HEAD does not have the line yet
+        self.assertNotIn("spec:gone/x.md", items(out["missing"]))
+
+    def test_missing_reference_is_listed_per_source(self):
+        h = self.A["spec"]
+        write(h / self.hfile, HANDOFF + "- `gone/x.md`\n")
+        self.set_notes("- `gone/x.md`")
+        git(h, "add", "--", self.hfile, self.note("A1"))
+        code, out = self.cli("A", "report", "--task", "A1", "--index")
+        reasons = [x["reason"] for x in out["missing"] if x["item"] == "spec:gone/x.md"]
+        self.assertEqual(len(reasons), 2, out["missing"])
+        self.assertTrue(any(r.endswith(f"({self.hfile})") for r in reasons))
+        self.assertTrue(any(r.endswith(f"({self.note('A1')})") for r in reasons))
+        self.assertTrue(all(ho.NO_BACKTICKS in r for r in reasons))
 
 
 # ---------------------------------------------------------------- another home repo, no task notes

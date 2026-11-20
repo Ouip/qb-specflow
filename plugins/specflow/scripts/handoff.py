@@ -16,7 +16,7 @@ comes from the "handoff" block of workflow.json in the product folder (the folde
   python handoff.py export --task <id> [--task <id>...] [--artifact ID=URI]... [--optional-artifact ID=URI]...
                            [--ref REPO_ID=REF]... [--handoff-id ID] [--machine NAME] [--json]
   python handoff.py verify [--handoff <handoff_id>] [--fetch] [--for <capability>...] [--json]
-  python handoff.py report [--task <id>...] [--fetch] [--json]
+  python handoff.py report [--task <id>...] [--index] [--ref REPO_ID=REF]... [--fetch] [--json]
   python handoff.py new-id [--machine NAME]
   Common: --product DIR (default: the current directory), before or after the subcommand. The home repo is the checkout
   that holds the product folder; the other repos' paths on this machine come from <home repo root>/specflow.local.json.
@@ -35,12 +35,16 @@ verify: checks every item of the manifest and lists all problems at once (a time
   not pulled. Only --fetch talks to remotes (fetch + ls-remote). Only the references in the handoff file and in the notes of
   the manifest's task_ids are checked.
 report: read-only audit of the handoff as committed now (e.g. one without a manifest): what another machine cannot get.
+  --index checks the home repo as export does (staged, before the carrier commit) and --ref as export's, so the
+  handoff file and task notes can be checked before export.
 None of the commands commits, pushes or changes a working tree. Hashes are always of Git blobs (git cat-file blob),
 never of working-tree files.
 
 References are code spans that look like paths, markdown links, [[wikilinks]] and URLs. A repo id right before a code
 span (app `src/x.c`) or app:src/x.c names the repo; otherwise it is the home repo. A reference is exempt when the mark
-`local only` or `僅本機` directly follows it (blanks or one opening bracket in between).
+`local only` or `僅本機` directly follows it (blanks or one opening bracket in between). A code span names only what
+another machine can open (repo + relative path): a branch, a command or a deleted file in one is reported missing;
+write it without backticks.
 
 Levels (JSON "level"): export: "local" (manifest written, no untracked / uncommitted pending item); verify:
 "published" (fetched, carrier commit checked, nothing missing) or "resumable" (published and the requested capabilities
@@ -933,9 +937,10 @@ class HandoffCheck:
     fetched: bool = False
     home_at: str = "carrier"
 
-    def add(self, bucket: str, item: str, reason: str) -> None:
+    def add(self, bucket: str, item: str, reason: str, per_reason: bool = False) -> None:
+        """One entry per item; per_reason: one per item and reason (a reference: once per note it is written in)."""
         lst = getattr(self, bucket)
-        if all(x["item"] != item for x in lst):
+        if all(x["item"] != item or (per_reason and x["reason"] != reason) for x in lst):
             lst.append({"item": item, "reason": reason})
 
     @property
@@ -1107,7 +1112,8 @@ def _audit(m: HandoffManifest, local: dict, fetch: bool, home_at: str, repo_ids:
 
     # 5. references in the handoff file and the selected tasks' notes (task_ids): each is in the manifest or directly
     #    followed by a local-only mark. Other notes the handoff file links are carried (required_files), but the
-    #    references inside them are not checked (same as collect).
+    #    references inside them are not checked (same as collect). Each source lists its own: a reference in two notes
+    #    gives two entries, one per note.
     hg, hrev = gits.get(home), revs.get(home)
     if hg is not None and hrev is not None:
         uris = {a["uri"] for a in m.artifacts}
@@ -1123,7 +1129,7 @@ def _audit(m: HandoffManifest, local: dict, fetch: bool, home_at: str, repo_ids:
                 text = data.decode("utf-8", "replace")
                 _secret_gate(text, src)
                 for ref in parse_refs(text, src, home, repo_ids, cfg.local_only):
-                    key = (ref.kind, ref.repo, ref.path, ref.token)
+                    key = (src, ref.kind, ref.repo, ref.path, ref.token)
                     if ref.local_ok or key in seen:
                         continue
                     seen.add(key)
@@ -1199,7 +1205,13 @@ def _audit_repo(chk, r, m, local, fetch, home_at, cfg, req, pend_files, pend_rep
     _dirty(chk, g, rid, req, pend_files, blocking=home_at != "index")
 
 
+NO_BACKTICKS = "a branch, a command or a deleted file goes without backticks"
+
+
 def _check_ref(chk, ref: Ref, src, home, req, pend_files, shas, gits, revs, uris) -> None:
+    def miss(item: str, reason: str) -> None:  # every reason here ends with the note: one entry per note
+        chk.add("missing", item, reason, per_reason=True)
+
     if ref.kind == "url":
         if ref.token not in uris:
             chk.warnings.append(f"external link not in artifacts (no hash, not required for resume): {ref.token} ({src})")
@@ -1208,16 +1220,16 @@ def _check_ref(chk, ref: Ref, src, home, req, pend_files, shas, gits, revs, uris
         chk.warnings.append(f"template or wildcard, not checked: {ref.token} ({src})")
         return
     if ref.kind == "local":
-        chk.add("missing", ref.token, "only on this machine (absolute path, outside the repo, the git dir or a "
-                                      "handoff.local_only prefix): another machine cannot get it; point to a source "
-                                      f"in a repo, or put `{LOCAL_ONLY_MARKS[0]}` right after it ({src})")
+        miss(ref.token, "only on this machine (absolute path, outside the repo, the git dir or a "
+                        "handoff.local_only prefix): another machine cannot get it; point to a source "
+                        f"in a repo, or put `{LOCAL_ONLY_MARKS[0]}` right after it ({src})")
         return
     if ref.kind == "wikilink":
         hits = _resolve_wikilink(ref.token, gits[home].files(revs[home]))
         if len(hits) != 1:
-            chk.add("missing", f"[[{ref.token}]]", (f"wikilink matches no file in {home}" if not hits else
-                                                   f"wikilink matches several files: {', '.join(hits[:3])}")
-                    + f" ({src})")
+            miss(f"[[{ref.token}]]", (f"wikilink matches no file in {home}" if not hits else
+                                     f"wikilink matches several files: {', '.join(hits[:3])}")
+                 + f" ({src})")
             return
         rid, rel, bare, is_dir = home, hits[0], False, False
     else:
@@ -1226,26 +1238,27 @@ def _check_ref(chk, ref: Ref, src, home, req, pend_files, shas, gits, revs, uris
     if (rid, rel) in req or (rid, rel) in pend_files:
         return
     if rid not in shas:
-        chk.add("missing", item, f"references a {rid} file, but the manifest has no {rid} (the source machine has no "
-                                 f"mapping for it or it is not a git repo) ({src})")
+        miss(item, f"references a {rid} file, but the manifest has no {rid} (the source machine has no "
+                   f"mapping for it or it is not a git repo) ({src})")
         return
     g, rev = gits.get(rid), revs.get(rid)
     if g is None or rev is None:  # not in the manifest means missing; this machine just cannot look closer
-        chk.add("missing", item, f"not listed in the manifest ({rid}'s handoff version is not on this machine; no "
-                                 f"more detail) ({src})")
+        miss(item, f"not listed in the manifest ({rid}'s handoff version is not on this machine; no "
+                   f"more detail) ({src})")
         return
     t = g.obj_type(rev, rel)
     if t == "tree":
         chk.warnings.append(f"directory reference: only its existence is checked, not each file: {item} ({src})")
     elif is_dir:
-        chk.add("missing", item, f"directory not in {rid}'s handoff version ({src})")
+        miss(item, f"directory not in {rid}'s handoff version; {NO_BACKTICKS} ({src})")
     elif t == "blob":
-        chk.add("missing", item, f"referenced but not listed in the manifest's required_files ({src})")
+        miss(item, f"referenced but not listed in the manifest's required_files ({src})")
     elif bare:
-        chk.add("missing", item, f"file name only, no repo path (not at the {home} root; write repo + relative path)"
-                                 f"{_hints(gits, revs, rid, rel, True)} ({src})")
+        miss(item, f"file name only, no repo path (not at the {home} root; write repo + relative path)"
+                   f"{_hints(gits, revs, rid, rel, True)}; {NO_BACKTICKS} ({src})")
     else:
-        chk.add("missing", item, f"not in {rid}'s handoff version{_hints(gits, revs, rid, rel, False)} ({src})")
+        miss(item, f"not in {rid}'s handoff version{_hints(gits, revs, rid, rel, False)}; {NO_BACKTICKS} "
+                   f"({src})")
 
 
 def _check_capabilities(chk: HandoffCheck, caps: list, policy: dict, local: dict, which, probe) -> None:
@@ -1341,19 +1354,23 @@ def _kv(s: str, what: str, shape: str) -> tuple[str, str]:
     return k, v
 
 
-def cmd_export(a) -> int:
-    policy, cfg, root, local = _setup(a)
-    notes: list[str] = []
-    arts = [(*_kv(s, "--artifact", "ID=URI"), True) for s in a.artifact] + \
-           [(*_kv(s, "--optional-artifact", "ID=URI"), False) for s in a.optional_artifact]
+def _ref_args(a) -> dict[str, str]:
     refs: dict[str, str] = {}
     for s in a.ref:
         k, v = _kv(s, "--ref", "REPO_ID=REF")
         if k in refs:
             raise HandoffError(f"--ref: repo \"{k}\" is given more than once (one ref per repo)", 2)
         refs[k] = v
+    return refs
+
+
+def cmd_export(a) -> int:
+    policy, cfg, root, local = _setup(a)
+    notes: list[str] = []
+    arts = [(*_kv(s, "--artifact", "ID=URI"), True) for s in a.artifact] + \
+           [(*_kv(s, "--optional-artifact", "ID=URI"), False) for s in a.optional_artifact]
     m = collect_handoff(a.product, a.task, policy=policy, local=local, artifacts=arts, handoff_id=a.handoff_id,
-                        source_machine=_default_machine(a), refs=refs, notes=notes)
+                        source_machine=_default_machine(a), refs=_ref_args(a), notes=notes)
     chk = verify_handoff(m, local, False, policy=policy, capabilities=[], home_at="index")  # check (incl. secrets) first
     chk.warnings[:0] = notes
     code = chk.exit_code
@@ -1459,19 +1476,21 @@ def cmd_verify(a) -> int:
 
 def cmd_report(a) -> int:
     policy, cfg, root, local = _setup(a)
+    at = "index" if a.index else "head"
     notes: list[str] = []
-    m = collect_handoff(a.product, a.task, policy=policy, local=local, home_at="head",
-                        source_machine=_default_machine(a), notes=notes)
+    m = collect_handoff(a.product, a.task, policy=policy, local=local, home_at=at,
+                        source_machine=_default_machine(a), refs=_ref_args(a), notes=notes)
     if a.fetch:  # unpushed is then judged from the remote as fetched, not from remote refs remembered here
         m.pending_transfers = [p for p in m.pending_transfers if p.get("relative_path") or p.get("artifact_id")]
-    chk = verify_handoff(m, local, a.fetch, policy=policy, capabilities=[], home_at="head")
+    chk = verify_handoff(m, local, a.fetch, policy=policy, capabilities=[], home_at=at)
     chk.warnings[:0] = notes
     res = {**chk.to_dict(), "command": "report", "report_only": True,
            "repos": m.repos, "required_files": m.required_files, "pending_transfers": m.pending_transfers}
     if a.json:
         _print_json(res)
     else:
-        print("report (read-only, nothing written): the handoff as committed now; what another machine cannot get")
+        print(f"report (read-only, nothing written): the handoff as {'staged' if a.index else 'committed'} now; what "
+              "another machine cannot get")
         for r in m.repos:
             print(f"  {r['repo_id']}: {r['remote_alias']}/{r['ref']} @ {r['commit_sha'][:12]}")
         _print_check(chk)
@@ -1513,6 +1532,8 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_verify)
     p = sub.add_parser("report")
     p.add_argument("--task", action="append", default=[])
+    p.add_argument("--index", action="store_true")
+    p.add_argument("--ref", action="append", default=[], metavar="REPO_ID=REF")
     p.add_argument("--fetch", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_report, machine=None)

@@ -27,8 +27,8 @@ Every rule of steps 2–5 still holds; only the order changes, and the scripts c
 
 a. Code repos first: commit your own paths there (step 4) and push (step 5); a branch without an upstream: `git push -u <remote> <branch>`.
 b. `<handoff.py> new-id` prints a handoff ID.
-c. Rewrite the handoff file (step 3) with that ID as its first line. A reference to something that stays on this machine on purpose is directly followed by the mark `local only` (or `僅本機`).
-d. In the spec repo: `git add -- <your own paths>`, including the handoff file, task notes and new files the handoff needs.
+c. Rewrite the handoff file (step 3) with that ID as its first line. A code span, in the handoff file and in task notes, holds only what another machine can open: repo + relative path; a branch, a command or a deleted file goes without backticks. A reference to something that stays on this machine on purpose is directly followed by the mark `local only` (or `僅本機`).
+d. In the spec repo: `git add -- <your own paths>`, including the handoff file, task notes and new files the handoff needs. Then `<handoff.py> report --index --task <id>… --json` with the same `--task` and `--ref` as e: fix every `missing` entry whose reason ends with the handoff file or a task note (a reference written there), add the file again and run it once more; entries still there go into the reply. Exit 2 → stop as in e.
 e. `<handoff.py> export --task <id>… --handoff-id <ID> --json`: one `--task` per component this session worked on; add `--ref <repo id>=<branch>` for work on a branch the mapped checkout does not have checked out (e.g. a dispatch worktree). By exit code:
    - 0 → f.
    - 4 with `level` `local` → f; the reply says "saved locally, missing:" and lists every entry of `missing` and `pending_transfers`.

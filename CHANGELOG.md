@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 0.1.6 — 2026-11-20
+
+- `handoff.py`: a missing reference is listed once per note it is written in, so one run
+  shows every place to fix; the reason for a path not in the handoff version, or a file
+  name only, says that a branch, a command or a deleted file goes without backticks.
+- `handoff.py report --index` checks the home repo as export does (staged, before the
+  carrier commit) and takes export's `--ref`, so the handoff file and task notes can be
+  checked before export.
+- `wrapup`: a code span holds only what another machine can open (repo + relative path);
+  step d runs `report --index` and fixes every missing reference before the export.
+
 ## 0.1.5 — 2026-11-19
 
 - `wrapup`: `git commit -- <paths…>` commits each path's whole working-tree file, so a
